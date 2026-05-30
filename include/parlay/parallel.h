@@ -211,6 +211,11 @@ inline void par_do(Lf&& left, Rf&& right, bool conservative) {
   return fork_join_scheduler::pardo(internal::get_current_scheduler(), std::forward<Lf>(left), std::forward<Rf>(right), conservative);
 }
 
+template <typename F>
+inline auto augment(F&& f) {
+  return fork_join_scheduler::augment(internal::get_current_scheduler(), std::forward<F>(f));
+}
+
 // Execute the given function f() on p threads inside its own private scheduler instance
 //
 // The scheduler instance is destroyed upon completion and can not be re-used. Creating a
