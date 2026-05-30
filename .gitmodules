@@ -1,3 +1,6 @@
 [submodule "include/spdlog"]
 	path = include/spdlog
 	url = https://github.com/gabime/spdlog.git
+[submodule "pbbs/PAM"]
+	path = pbbs/PAM
+	url = https://github.com/cmuparlay/PAM.git
