@@ -10,23 +10,26 @@ def parse_benchmark_file(filepath):
             if not line or "Benchmark" in line or "---" in line:
                 continue
             parts = [p.strip() for p in line.split('|')]
-            if len(parts) < 7:
+            
+            # The table format has 8 columns: 
+            # [0] Benchmark | [1] Alias | [2] Input | [3] Procs | [4] Unaug Time | [5] Aug Time | [6] Ratio | [7] % Diff
+            if len(parts) < 8:
                 continue
             
-            name = parts[0]
+            alias = parts[1]
             try:
-                proc = int(parts[2])
-                unaug = float(parts[3])
-                aug = float(parts[4])
-                ratio = float(parts[5])
+                proc = int(parts[3])
+                unaug = float(parts[4])
+                aug = float(parts[5])
+                ratio = float(parts[6])
             except ValueError:
                 continue
 
-            if name not in data:
-                data[name] = {'Proc': [], 'Ratio': []}
+            if alias not in data:
+                data[alias] = {'Proc': [], 'Ratio': []}
             
-            data[name]['Proc'].append(proc)
-            data[name]['Ratio'].append(ratio)
+            data[alias]['Proc'].append(proc)
+            data[alias]['Ratio'].append(ratio)
     return data
 
 def generate_plots(data):
@@ -140,7 +143,7 @@ def generate_plots(data):
     plt.savefig('../result/overhead_plot.pdf', bbox_inches='tight', dpi=300)
 
 if __name__ == "__main__":
-    file_path = 'table_all_benchmark_alias.txt'
+    file_path = '../result/table_all_benchmark_alias.txt' 
     try:
         benchmark_data = parse_benchmark_file(file_path)
         generate_plots(benchmark_data)
