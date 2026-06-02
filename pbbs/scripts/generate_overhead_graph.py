@@ -143,7 +143,7 @@ def generate_plots(data):
     plt.savefig('../result/overhead_plot.pdf', bbox_inches='tight', dpi=300)
 
 if __name__ == "__main__":
-    file_path = '../result/table_all_benchmark_alias.txt' 
+    file_path = '../result/combined_table_all.txt' 
     try:
         benchmark_data = parse_benchmark_file(file_path)
         generate_plots(benchmark_data)
