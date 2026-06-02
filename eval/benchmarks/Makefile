@@ -2,7 +2,7 @@ PROJECT_ROOT := $(shell git rev-parse --show-toplevel)
 INCLUDE      := $(PROJECT_ROOT)/include
 
 CC:=g++
-CFLAGS = -O2 -march=native -std=c++17 -I$(INCLUDE) -pthread
+CFLAGS = -O2 -march=native -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread
 
 BIN_DIR := bin
 RESULT_DIR := result
@@ -68,9 +68,9 @@ BIN_NUMERICAL_AUG := $(addsuffix .aug, $(BIN_NUMERICAL))
 FORCE:
 
 suite: $(BIN_GRAPH) $(BIN_GEOMETRY) $(BIN_STRING) $(BIN_SORTING) $(BIN_NUMERICAL) $(BIN_GRAPH_AUG) $(BIN_GEOMETRY_AUG) $(BIN_STRING_AUG) $(BIN_SORTING_AUG) $(BIN_NUMERICAL_AUG)
-run: $(addprefix $(RESULT_DIR)/, $(sort $(SUITE) $(AUG_SUITE))) gen_graphs
+run: $(addprefix $(RESULT_DIR)/, $(sort $(SUITE) $(AUG_SUITE)))
 
-gen_graphs: $(GEN_GRAPH_DIR) run
+gen_graphs: run | $(GEN_GRAPH_DIR) 
 	python3 ../scripts/generate_overhead_table.py $(RESULT_DIR) > $(GEN_GRAPH_DIR)/parlay_table_1_40_80.txt
 	python3 ../scripts/generate_overhead_table_all.py $(RESULT_DIR) > $(GEN_GRAPH_DIR)/parlay_table_all.txt
 	python3 ../scripts/generate_overhead_graph.py $(RESULT_DIR) $(GEN_GRAPH_DIR)
