@@ -7,13 +7,15 @@ set -e
 # Get the absolute path of the directory containing this script (e.g., /path/to/project/scripts)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Define the root directory (one level up from scripts)
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+# Define the pbbs root directory (one level up from scripts)
+PBBS_ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Define explicit paths to avoid any relative ambiguity
-RESULT_DIR="${ROOT_DIR}/result"
-BENCHMARKS_DIR="${ROOT_DIR}/benchmarks"
-EVAL_DIR="$(dirname "$ROOT_DIR")/eval" 
+RESULT_DIR="${PBBS_ROOT_DIR}/result"
+BENCHMARKS_DIR="${PBBS_ROOT_DIR}/benchmarks"
+EVAL_DIR="$(dirname "$PBBS_ROOT_DIR")/eval" 
+
+export CPATH="$(dirname "$PBBS_ROOT_DIR")/include/spdlog/include:$CPATH"
 
 echo "Initializing benchmark pipeline..."
 
@@ -24,7 +26,7 @@ find "$BENCHMARKS_DIR" -type f \( -name "avg_timing.txt" -o -name "logs_vertex.t
 
 # 3. Run unaugmented benchmarks
 echo "Running unaugmented benchmarks..."
-python3 -u "$ROOT_DIR/runall" -force -cham80 > "$RESULT_DIR/run_unaug.out" 2>&1
+python3 -u "$PBBS_ROOT_DIR/runall" -force -cham80 > "$RESULT_DIR/run_unaug.out" 2>&1
 python3 "$SCRIPT_DIR/parse_avg_timing.py" > "$RESULT_DIR/unaug.json"
 
 # 4. Clean up before augmented run
@@ -32,7 +34,7 @@ find "$BENCHMARKS_DIR" -type f \( -name "avg_timing.txt" -o -name "logs_vertex.t
 
 # 5. Run augmented benchmarks
 echo "Running augmented benchmarks..."
-python3 -u "$ROOT_DIR/runall" -force -cham80 -aug > "$RESULT_DIR/run_aug.out" 2>&1
+python3 -u "$PBBS_ROOT_DIR/runall" -force -cham80 -aug > "$RESULT_DIR/run_aug.out" 2>&1
 python3 "$SCRIPT_DIR/parse_avg_timing.py" > "$RESULT_DIR/aug.json"
 
 # 6. Generate tables
