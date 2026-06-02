@@ -27,19 +27,28 @@ def generate_comparison_table(unaug_file, aug_file):
 
     col_widths = {
         "benchmark": len("Benchmark"),
+        "alias": len("Alias"),
         "input": len("Input"),
         "procs": len("Procs")
     }
 
-    for benchmark, procs_data in unaug_data.items():
-        for procs, inputs in procs_data.items():
+    for benchmark, b_data in unaug_data.items():
+        col_widths["benchmark"] = max(col_widths["benchmark"], len(benchmark))
+        
+        alias = b_data.get("alias", "N/A")
+        col_widths["alias"] = max(col_widths["alias"], len(alias))
+        
+        for key, inputs in b_data.items():
+            if not key.isdigit():
+                continue
+                
+            col_widths["procs"] = max(col_widths["procs"], len(key))
             for input_name in inputs:
-                col_widths["benchmark"] = max(col_widths["benchmark"], len(benchmark))
                 col_widths["input"] = max(col_widths["input"], len(input_name))
-                col_widths["procs"] = max(col_widths["procs"], len(str(procs)))
     
     header = (
         f"{'Benchmark':<{col_widths['benchmark']}} | "
+        f"{'Alias':<{col_widths['alias']}} | "
         f"{'Input':<{col_widths['input']}} | "
         f"{'Procs':>{col_widths['procs']}} | "
         f"{'Unaug Time':>12} | "
@@ -50,24 +59,28 @@ def generate_comparison_table(unaug_file, aug_file):
     print(header)
     print("-" * len(header))
 
-    for benchmark, procs_data in unaug_data.items():
-        sorted_procs = sorted([int(p) for p in procs_data.keys()])
+    for benchmark, b_data in unaug_data.items():
+        alias = b_data.get("alias", "N/A")
+        
+        procs_keys = [k for k in b_data.keys() if k.isdigit()]
+        sorted_procs = sorted([int(p) for p in procs_keys])
 
         for procs in sorted_procs:
             procs_str = str(procs)
-            inputs = procs_data[procs_str]
+            inputs = b_data[procs_str]
 
             for input_name in sorted(inputs.keys()):
                 aug_val = aug_data.get(benchmark, {}).get(procs_str, {}).get(input_name)
                 if aug_val is None:
                     continue
 
-                unaug_val = unaug_data[benchmark][procs_str][input_name]
+                unaug_val = inputs[input_name]
                 ratio = aug_val / unaug_val if unaug_val != 0 else float('inf')
                 pct_diff = ((aug_val - unaug_val) / unaug_val) * 100 if unaug_val != 0 else float('inf')
                 
                 row = (
                     f"{benchmark:<{col_widths['benchmark']}} | "
+                    f"{alias:<{col_widths['alias']}} | "
                     f"{input_name:<{col_widths['input']}} | "
                     f"{procs:>{col_widths['procs']}} | "
                     f"{unaug_val:>12.4f} | "
@@ -77,7 +90,6 @@ def generate_comparison_table(unaug_file, aug_file):
                 )
                 print(row)
                 # l.append(pct_diff)
-
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
@@ -91,4 +103,3 @@ if __name__ == '__main__':
 
     # print("Average % Diff:", sum(l)/len(l) if l else 0)
     # print(l)
-
