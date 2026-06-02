@@ -71,7 +71,8 @@ suite: $(BIN_GRAPH) $(BIN_GEOMETRY) $(BIN_STRING) $(BIN_SORTING) $(BIN_NUMERICAL
 run: $(addprefix $(RESULT_DIR)/, $(sort $(SUITE) $(AUG_SUITE))) gen_graphs
 
 gen_graphs: $(GEN_GRAPH_DIR) run
-	python3 ../scripts/generate_overhead_table.py $(RESULT_DIR) > $(GEN_GRAPH_DIR)/overhead_table.txt
+	python3 ../scripts/generate_overhead_table.py $(RESULT_DIR) > $(GEN_GRAPH_DIR)/parlay_table_1_40_80.txt
+	python3 ../scripts/generate_overhead_table_all.py $(RESULT_DIR) > $(GEN_GRAPH_DIR)/parlay_table_all.txt
 	python3 ../scripts/generate_overhead_graph.py $(RESULT_DIR) $(GEN_GRAPH_DIR)
 	python3 ../scripts/generate_speedup_subplots.py $(RESULT_DIR) $(GEN_GRAPH_DIR)
 
