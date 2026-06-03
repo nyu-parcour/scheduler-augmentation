@@ -122,14 +122,10 @@ def process_benchmarks(root):
     return table_data
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python script.py <results_dir> <output_dir>")
+    if len(sys.argv) < 2:
+        print("Usage: python script.py <results_dir>")
         sys.exit(1)
         
     result_root_path = sys.argv[1]
-    output_dir = sys.argv[2]
-    
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
 
     data = process_benchmarks(result_root_path)
