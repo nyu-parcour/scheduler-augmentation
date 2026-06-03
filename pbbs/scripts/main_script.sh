@@ -24,9 +24,11 @@ rm -rf "$RESULT_DIR"
 mkdir -p "$RESULT_DIR"
 find "$BENCHMARKS_DIR" -type f \( -name "avg_timing.txt" -o -name "logs_vertex.txt" \) -delete
 
+cd "$PBBS_ROOT_DIR"
+
 # 3. Run unaugmented benchmarks
 echo "Running unaugmented benchmarks..."
-python3 -u "$PBBS_ROOT_DIR/runall" -force -cham80 > "$RESULT_DIR/run_unaug.out" 2>&1
+python3 -u "runall" -force -cham80 > "$RESULT_DIR/run_unaug.out" 2>&1
 python3 "$SCRIPT_DIR/parse_avg_timing.py" > "$RESULT_DIR/unaug.json"
 
 # 4. Clean up before augmented run
@@ -34,7 +36,7 @@ find "$BENCHMARKS_DIR" -type f \( -name "avg_timing.txt" -o -name "logs_vertex.t
 
 # 5. Run augmented benchmarks
 echo "Running augmented benchmarks..."
-python3 -u "$PBBS_ROOT_DIR/runall" -force -cham80 -aug > "$RESULT_DIR/run_aug.out" 2>&1
+python3 -u "runall" -force -cham80 -aug > "$RESULT_DIR/run_aug.out" 2>&1
 python3 "$SCRIPT_DIR/parse_avg_timing.py" > "$RESULT_DIR/aug.json"
 
 # 6. Generate tables
