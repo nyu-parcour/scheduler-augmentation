@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+bnchmrk="MIS"
+benchmark="Maximal Independent Set"
+checkProgram="../bench/MISCheck"
+dataDir = "../graphData/data"
+
+tests = [
+    # [1, "randLocalGraph_JR_10_20000000", "", ""],
+    [1, "rMatGraph_JR_12_16000000", "", ""]
+    # [1, "3Dgrid_JR_64000000", "", ""]
+    ]
+
+import sys
+sys.path.insert(0, 'common')
+import runTests
+runTests.timeAllArgs(bnchmrk, benchmark, checkProgram, dataDir, tests)
+
