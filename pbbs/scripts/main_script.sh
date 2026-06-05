@@ -15,7 +15,7 @@ RESULT_DIR="${PBBS_ROOT_DIR}/result"
 BENCHMARKS_DIR="${PBBS_ROOT_DIR}/benchmarks"
 EVAL_DIR="$(dirname "$PBBS_ROOT_DIR")/eval" 
 
-export CPATH="$(dirname "$PBBS_ROOT_DIR")/include:$(dirname "$PBBS_ROOT_DIR")/include/spdlog/include:$CPATH"
+export CPATH="$(dirname "$PBBS_ROOT_DIR")/include:$(dirname "$PBBS_ROOT_DIR")/include/spdlog/include:$(dirname "$PBBS_ROOT_DIR")/include/spdlog:$CPATH"
 
 echo "Initializing benchmark pipeline..."
 
