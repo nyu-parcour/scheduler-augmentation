@@ -3,6 +3,16 @@
 # Fail immediately if any command exits with a non-zero status
 set -e
 
+echo "Auto-generating ParlayLib symlinks for Makefiles..."
+PARLAY_ABS_PATH="$(dirname "$PBBS_ROOT_DIR")/include/parlay"
+
+# Scan all Makefiles for the word "parlay", and dynamically create a symlink in their directory
+find "$BENCHMARKS_DIR" -name "Makefile" | xargs grep -l "parlay" | while read -r makefile; do
+    target_dir=$(dirname "$makefile")
+    # -s (symlink), -n (don't dereference), -f (force overwrite if a broken link exists)
+    ln -snf "$PARLAY_ABS_PATH" "$target_dir/parlay"
+done
+
 # 1. Resolve Absolute Paths
 # Get the absolute path of the directory containing this script (e.g., /path/to/project/scripts)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
