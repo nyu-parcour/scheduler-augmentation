@@ -21,7 +21,11 @@
 #include <cfloat>
 #include "parlay/primitives.h"
 #include "parlay/internal/get_time.h"
-#include "pam/pam.h"
+#include "pam-gc-opt/pam.h"   /* NOTE: This is a modified version of PAM with
+                               * slightly modified GC parallelization heuristic.
+                               * See github.com/nyu-parcour/PAM,
+                               * branch parsweep_exp
+                               */
 #include "sweep.h"
 #include "range.h"
 
