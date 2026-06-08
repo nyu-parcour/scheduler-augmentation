@@ -21,6 +21,10 @@
 #include "internal/memory_size.h"
 #include "internal/pool_allocator.h"
 
+#ifdef PARLAY_AUG
+#include "internal/vertex.h"
+#endif
+
 // IWYU pragma: no_forward_declare is_trivially_relocatable
 
 namespace parlay {
@@ -241,6 +245,11 @@ public:
 
   // Allocate uninitialized storage appropriate for storing an object of type T
   static T* alloc() {
+#ifdef PARLAY_AUG
+    if (internal::vertex::Vertex::current != nullptr) {
+      internal::vertex::Vertex::current->allocate(sizeof(T));
+    }
+#endif
     void* buffer = get_allocator().alloc();
     assert(reinterpret_cast<uintptr_t>(buffer) % alignof(T) == 0);
     return static_cast<T*>(buffer);
@@ -248,6 +257,11 @@ public:
 
   // Free storage obtained by alloc()
   static void free(T* ptr) {
+#ifdef PARLAY_AUG
+    if (internal::vertex::Vertex::current != nullptr) {
+      internal::vertex::Vertex::current->deallocate(sizeof(T));
+    }
+#endif
     assert(ptr != nullptr);
     assert(reinterpret_cast<uintptr_t>(ptr) % alignof(T) == 0);
     get_allocator().free(static_cast<void*>(ptr));

@@ -14,7 +14,7 @@ ROUNDS := 1
 
 # GRAPH       := bfs triangle_count maximal_independent_set low_diameter_decomposition
 GRAPH       := triangle_count low_diameter_decomposition
-# GEOMETRY    := knn delaunay quickhull
+GEOMETRY    := knn delaunay quickhull
 # STRING      := kmp huffman_tree suffix_array
 # STRING      := kmp huffman_tree
 STRING      := huffman_tree

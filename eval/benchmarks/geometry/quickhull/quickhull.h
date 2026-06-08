@@ -47,11 +47,11 @@ intseq quickhull(pointseq const &Points, intseq Idxs, point l, point r) {
 
   // get points above the line l--P[mid_idx]
   auto left = parlay::filter(Idxs, [&] (int id) {
-    return area(l, mid, Points[id]) > 0;});
+    return id != mid_idx && area(l, mid, Points[id]) > 0;});
 
   // get points above the line P[mid_idx]--r
   auto right = parlay::filter(Idxs, [&] (int id) {
-    return area(mid, r, Points[id]) > 0;});
+    return id != mid_idx && area(mid, r, Points[id]) > 0;});
 
   Idxs.clear(); // clear and use std::move to avoid O(n log n) memory usage
 
@@ -83,7 +83,7 @@ intseq upper_hull(pointseq const &Points) {
 
   // get indices of points above the line P[mid_idx]--P[max_idx]
   auto above = parlay::filter(parlay::iota(n), [&] (int id) {
-    return area(minp, maxp, Points[id]) > 0;});
+    return id != max_idx && id != min_idx || area(minp, maxp, Points[id]) > 0;});
 
   intseq res = quickhull(Points, std::move(above), minp, maxp);
   parlay::sequence<intseq> nested = {intseq(1, min_idx), res, intseq(1, max_idx)};

@@ -22,6 +22,10 @@
 
 #include "concurrency/hazptr_stack.h"
 
+#ifdef PARLAY_AUG
+#include "vertex.h"
+#endif
+
 // IWYU pragma: no_include <array>
 
 namespace parlay {
@@ -133,6 +137,11 @@ struct pool_allocator {
   }
 
   void* allocate(size_t n) {
+#ifdef PARLAY_AUG
+    if (internal::vertex::Vertex::current != nullptr) {
+      internal::vertex::Vertex::current->allocate(n);
+    }
+#endif
     if (n > max_small) return allocate_large(n);
     size_t bucket = 0;
     while (n > sizes[bucket]) bucket++;
@@ -140,6 +149,11 @@ struct pool_allocator {
   }
 
   void deallocate(void* ptr, size_t n) {
+#ifdef PARLAY_AUG
+    if (internal::vertex::Vertex::current != nullptr) {
+      internal::vertex::Vertex::current->deallocate(n);
+    }
+#endif
     if (n > max_small) deallocate_large(ptr, n);
     else {
       size_t bucket = 0;
