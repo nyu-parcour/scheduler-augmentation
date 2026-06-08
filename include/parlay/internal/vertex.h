@@ -20,7 +20,7 @@ class Vertex {
 
   Vertex() : phase(0), no_forks(0), work(0) {}
 
-  Vertex(Vertex& other) :
+  Vertex(const Vertex& other) :
     phase(other.phase),
     no_forks(other.no_forks),
     work(other.work),

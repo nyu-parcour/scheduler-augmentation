@@ -216,6 +216,14 @@ inline auto augment(F&& f) {
   return fork_join_scheduler::augment(internal::get_current_scheduler(), std::forward<F>(f));
 }
 
+inline auto get_current_vertex() {
+#ifdef PARLAY_AUG
+  return internal::get_current_scheduler().get_vertex();
+#else
+  return nullptr;
+#endif
+}
+
 // Execute the given function f() on p threads inside its own private scheduler instance
 //
 // The scheduler instance is destroyed upon completion and can not be re-used. Creating a

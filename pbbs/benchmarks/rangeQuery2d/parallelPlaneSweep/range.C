@@ -73,46 +73,45 @@ struct RangeQuery {
 };
 
 long range(Points const &points, Queries const &queries, bool verbose) {
+  std::cout << "RANGE START" << std::endl;
   long total;
-  parlay::augment([&] {
-    parlay::internal::timer t("range", verbose);
+  parlay::internal::timer t("range", verbose);
 
-    parlay::get_current_vertex()->phase = 1;
-    RangeQuery r(points);
-    t.next("build");
+  parlay::get_current_vertex()->phase = 1;
+  RangeQuery r(points);
+  t.next("build");
 
-    parlay::get_current_vertex()->phase = 2;
-    total = parlay::reduce(parlay::map(queries, [&] (query q) {
-                return (long) r.count_in_range(q);}));
-    /*auto result_s = parlay::map(queries, [&] (query q) {
-                return (long) r.count_in_range(q);});
-    long total = parlay::reduce(result_s);*/
-    t.next("query");
+  parlay::get_current_vertex()->phase = 2;
+  total = parlay::reduce(parlay::map(queries, [&] (query q) {
+              return (long) r.count_in_range(q);}));
+  /*auto result_s = parlay::map(queries, [&] (query q) {
+              return (long) r.count_in_range(q);});
+  long total = parlay::reduce(result_s);*/
+  t.next("query");
 
 #ifdef CHECK
-    //check
-    //int num_queries = queries.size();
-    int num_queries = 10; //only check 10 of them 
-    int n = points.size();
-    size_t total_check = 0;
-    for (int i = 0; i < num_queries; i++) {
-      //cout << "query: " << queries[i].x1 << " " << queries[i].y1 << " " << queries[i].x2 << " " << queries[i].y2 << endl;
-      size_t t = 0;
-      for (int j = 0; j < n; j++) {
-        if ((points[j].x > queries[i].x1) && (points[j].x < queries[i].x2) && (points[j].y > queries[i].y1) && (points[j].y < queries[i].y2)) t++;
-      }
-      long res = r.count_in_range(queries[i]);
-      cout << "query " << i << ", naive: " << t << ", PAM: " << res << endl;
-      total_check += t;
+  //check
+  //int num_queries = queries.size();
+  int num_queries = 10; //only check 10 of them 
+  int n = points.size();
+  size_t total_check = 0;
+  for (int i = 0; i < num_queries; i++) {
+    //cout << "query: " << queries[i].x1 << " " << queries[i].y1 << " " << queries[i].x2 << " " << queries[i].y2 << endl;
+    size_t t = 0;
+    for (int j = 0; j < n; j++) {
+      if ((points[j].x > queries[i].x1) && (points[j].x < queries[i].x2) && (points[j].y > queries[i].y1) && (points[j].y < queries[i].y2)) t++;
     }
-    cout << "total: " << total << endl;
-    cout << "total_check: " << total_check << endl;
+    long res = r.count_in_range(queries[i]);
+    cout << "query " << i << ", naive: " << t << ", PAM: " << res << endl;
+    total_check += t;
+  }
+  cout << "total: " << total << endl;
+  cout << "total_check: " << total_check << endl;
 #endif
 
-    parlay::get_current_vertex()->phase = 3;
-    r.clear();
-    t.next("clear");
-  });
-
+  parlay::get_current_vertex()->phase = 3;
+  r.clear();
+  t.next("clear");
+  std::cout << "RANGE END" << std::endl;
   return total;
 }

@@ -192,6 +192,12 @@ struct scheduler {
     return finished_flag.load(std::memory_order_acquire);
   }
 
+#ifdef PARLAY_AUG
+  Vertex* get_vertex() {
+    return Vertex::current;
+  }
+#endif
+
  private:
   // Align to avoid false sharing.
   struct alignas(128) attempt {
