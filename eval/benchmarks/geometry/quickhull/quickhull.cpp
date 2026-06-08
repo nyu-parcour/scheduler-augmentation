@@ -13,12 +13,21 @@
 // Driver code
 // **************************************************************
 int main(int argc, char* argv[]) {
-  auto usage = "Usage: quickhull <n>";
-  if (argc != 2) std::cout << usage << std::endl;
+  auto usage = "Usage: quickhull <n> [--no-clear]";
+  if (argc < 2 || argc > 3) std::cout << usage << std::endl;
   else {
     long n;
     try { n = std::stol(argv[1]); }
     catch (...) { std::cout << usage << std::endl; return 1; }
+
+    bool clear_idxs = true;
+    if (argc == 3) {
+      if (std::string(argv[2]) == "--no-clear") clear_idxs = false;
+      else {
+        std::cout << usage << std::endl;
+        return 1;
+      }
+    }
 
     // Points on a semicircle (upper half) with radius R, evenly spaced in angle.
     const double pi = 3.14159265358979323846;
@@ -28,7 +37,7 @@ int main(int argc, char* argv[]) {
     });
 
     auto ret = parlay::augment([&]() {
-      auto results = upper_hull(points);
+      auto results = upper_hull(points, clear_idxs);
       std::cout << "upper_hull size: " << results.size() << std::endl;
     });
   }

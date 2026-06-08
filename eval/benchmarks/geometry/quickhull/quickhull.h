@@ -33,7 +33,8 @@ using pointseq = parlay::sequence<point>;
 // l and r are the start and endpoints to find the hull between, and
 // Idxs are the indices of the points (in Points) above the line defined by l--r.
 // **************************************************************
-intseq quickhull(pointseq const &Points, intseq Idxs, point l, point r) {
+intseq quickhull(pointseq const &Points, intseq Idxs, point l, point r,
+                 bool clear_idxs = true) {
   long n = Idxs.size();
   if (n <= 1) return Idxs;
 
@@ -53,13 +54,15 @@ intseq quickhull(pointseq const &Points, intseq Idxs, point l, point r) {
   auto right = parlay::filter(Idxs, [&] (int id) {
     return id != mid_idx && area(mid, r, Points[id]) > 0;});
 
-  Idxs.clear(); // clear and use std::move to avoid O(n log n) memory usage
+  if (clear_idxs) {
+    Idxs.clear(); // clear and use std::move to avoid O(n log n) memory usage
+  }
 
   // recurse in parallel
   intseq leftR, rightR;
   parlay::par_do_if(n > 100,
-                    [&] () {leftR = quickhull(Points, std::move(left), l, mid);},
-                    [&] () {rightR = quickhull(Points, std::move(right), mid, r);});
+                    [&] () {leftR = quickhull(Points, std::move(left), l, mid, clear_idxs);},
+                    [&] () {rightR = quickhull(Points, std::move(right), mid, r, clear_idxs);});
 
   parlay::sequence<intseq> nested = {leftR, intseq(1,mid_idx), rightR};
   return parlay::flatten(nested);
@@ -69,7 +72,7 @@ intseq quickhull(pointseq const &Points, intseq Idxs, point l, point r) {
 // The top-level call has to find the maximum and minimum x coordinates
 //   and use them for the initial recursive call
 // **************************************************************
-intseq upper_hull(pointseq const &Points) {
+intseq upper_hull(pointseq const &Points, bool clear_idxs = true) {
   int n = Points.size();
   auto pntless = [&] (point a, point b) {
     return (a.x < b.x) || ((a.x == b.x) && (a.y < b.y));};
@@ -85,7 +88,7 @@ intseq upper_hull(pointseq const &Points) {
   auto above = parlay::filter(parlay::iota(n), [&] (int id) {
     return id != max_idx && id != min_idx || area(minp, maxp, Points[id]) > 0;});
 
-  intseq res = quickhull(Points, std::move(above), minp, maxp);
+  intseq res = quickhull(Points, std::move(above), minp, maxp, clear_idxs);
   parlay::sequence<intseq> nested = {intseq(1, min_idx), res, intseq(1, max_idx)};
   return parlay::flatten(nested);
 }
