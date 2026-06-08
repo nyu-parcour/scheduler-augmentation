@@ -1,27 +1,45 @@
+# Scheduler Augmentation
 
-# ParlayLib - A Toolkit for Programming Parallel Algorithms on Shared-Memory Multicore Machines
+This repository contains the source code for the paper *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs" by Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung*, accepted into the ACM Symposium on Parallelism in Algorithms and Architectures (SPAA) 2026.
 
-[![Build status](https://github.com/cmuparlay/parlaylib/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/cmuparlay/parlaylib/actions)
-[![codecov](https://codecov.io/gh/cmuparlay/parlaylib/branch/master/graph/badge.svg)](https://codecov.io/gh/cmuparlay/parlaylib)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+# Repository Structure
+
+* It starts from a fork of [ParlayLib](https://github.com/cmuparlay/parlaylib)
+* The include/parlay/scheduler.h contains the changes implemented to extend the work-stealing scheduler with scheduler augmentation
+* The include/parlay/internal/vertex.h file contains the EvaluationVertex, measuring work, span, and the number of forks
+* The eval directory contains the ParlayLib benchmarks and related scripts for experimentation
+* The pbbs directory contains the [PBBS](https://github.com/cmuparlay/pbbsbench) benchmarks and related scripts for experimentation
+
+# How to run
+
+* Clone the repository
+
+* Install the required Python Modules
+```pip3 install -r requirements.txt```
+
+* Retrieve the submodules
+```git submodule update --init --recursive```
+
+* Run and generate the results for the parlaylib benchmarks
+```cd <repo_root>/eval/benchmarks; make gen_graphs```
+
+* <repo_root>/eval/benchmarks/result directory will contain the generated raw result files
+* <repo_root>/eval/benchmarks/summary_plots directory will contain the generated plots and tables:
+    * overhead_plot.png is the overhead plot
+    * speedup_subplots.png contains the generated speedup subplots
+    * parlay_table_1_40_80.txt is the table with the results for P = 1,40,80
+    * parlay_table_all.txt is the table with the results for all P i.e. 1,10,20,30,40,50,60,70,80
+
+* Run and generate the results for the pbbs benchmarks
+```cd <repo_root>/pbbs/scripts; nohup ./main_script.sh &```
+
+* <repo_root>/pbbs/result directory will contain the generated results, tables and plot:
+    * run_unaug.out and run_aug.out are the logs from the unaugmented and augmented runs
+    * unaug.json and aug.json are the processor-wise timing results for each benchmark
+    * pbbs_table_1_40_80.txt is the table with the results for P = 1,40,80
+    * pbbs_table_all.txt is the table with the results for all P i.e. 1,10,20,30,40,50,60,70,80
+    * combined_table_all.txt is the concatended results table with both parlay and pbbs benchmarks
+    * overhead_plot.pdf is the overhead plot (in the same format as Figure 12 of the paper)
 
 
-ParlayLib is a C++ library for developing efficient parallel algorithms and software on shared-memory multicore machines. It provides additional tools and primitives that go beyond what is available in the C++ standard library, and simplifies the task of programming provably efficient and scalable parallel algorithms. It consists of a sequence data type (analogous to std::vector), many parallel routines and algorithms, a work-stealing scheduler to support nested parallelism, and a scalable memory allocator. It has been developed over a period of seven years and used in a variety of software including the [PBBS benchmark suite](http://www.cs.cmu.edu/~pbbs/benchmarks.html), the [Ligra](http://jshun.github.io/ligra/), [Julienne](https://dl.acm.org/doi/pdf/10.1145/3087556.3087580), and [Aspen](https://github.com/ldhulipala/aspen) graph processing frameworks, the [Graph Based Benchmark Suite](https://github.com/ParAlg/gbbs), and the [PAM](https://cmuparlay.github.io/PAMWeb/) library for parallel balanced binary search trees, and an implementation of the TPC-H benchmark suite.
-
-Parlay is designed to be reasonably portable by being built upon mostly standards-compliant modern C++. It builds on [GCC](https://gcc.gnu.org/) and [Clang](https://clang.llvm.org/) on Linux, GCC and Apple Clang on OSX, and Microsoft Visual C++ ([MSVC](https://visualstudio.microsoft.com/vs/)) and [MinGW](http://www.mingw.org/) on Windows. It is also tested on GCC and Clang via Windows Subsystem for Linux ([WSL](https://docs.microsoft.com/en-us/windows/wsl/about)) and [Cygwin](https://www.cygwin.com/). Support beyond x86-64 has not yet been explored. We would warmly welcome contributions that seek to achieve this.
-
-# Documentation
-
-You can find Parlay's full reference documentation [here](https://cmuparlay.github.io/parlaylib/)
-
-# Examples
-
-Parlay comes with over 50 example applications that you can learn from. You can find them in the [examples](./examples) directory.
-
-# Developer documentation
-
-If you are interested in contributing to Parlay, the following pages describe useful information about our testing and benchmarking setups. If you just want to use Parlay in your own projects, these links are not relevant to you.
-
-* [Static analysis](./analysis/README.md)
-* [Unit tests](./test/README.md)
-* [Benchmarks](./benchmark/README.md)
+Note: In order to generate the combined_table_all.txt and the overhead_plot.pdf (similar to Figure 12 of the paper), the expected order is to first generate the parlay benchmark results and then the pbbs benchmark results
