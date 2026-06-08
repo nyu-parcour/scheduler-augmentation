@@ -56,7 +56,7 @@ python3 "$SCRIPT_DIR/generate_pbbs_1_40_80_table.py" "$RESULT_DIR/unaug.json" "$
 
 # 7. Concatenate and Graph
 echo "Concatenating tables and generating graphs..."
-python3 "$SCRIPT_DIR/concat_tables.py" "$RESULT_DIR/pbbs_table_all.txt" "$EVAL_DIR/summary_plots/parlay_table_all.txt" "$RESULT_DIR/combined_table_all.txt"
+python3 "$SCRIPT_DIR/concat_tables.py" "$RESULT_DIR/pbbs_table_all.txt" "$EVAL_DIR/benchmarks/summary_plots/parlay_table_all.txt" "$RESULT_DIR/combined_table_all.txt"
 
 cd "$SCRIPT_DIR" 
 python3 generate_overhead_graph.py
