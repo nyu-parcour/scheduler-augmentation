@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import numpy as np
 
 def parse_benchmark_file(filepath):
     """Parses the text file into a dictionary structure."""
