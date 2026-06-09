@@ -26,11 +26,11 @@ This repository contains the source code for the paper *"Scheduler Augmentation:
 
 4. **Run and generate the results for the ParlayLib benchmarks**
    ```bash
-   cd <repo_root>/eval/benchmarks
+   cd scheduler-augmentation/eval/benchmarks
    make gen_graphs
    ```
-   * `<repo_root>/eval/benchmarks/result` directory will contain the generated raw result files.
-   * `<repo_root>/eval/benchmarks/summary_plots` directory will contain the generated plots and tables:
+   * `scheduler-augmentation/eval/benchmarks/result` directory will contain the generated raw result files.
+   * `scheduler-augmentation/eval/benchmarks/summary_plots` directory will contain the generated plots and tables:
      * `overhead_plot.png`: The overhead plot.
      * `speedup_subplots.png`: Contains the generated speedup subplots.
      * `parlay_table_1_40_80.txt`: The table with results for $P = 1, 40, 80$.
@@ -38,10 +38,10 @@ This repository contains the source code for the paper *"Scheduler Augmentation:
 
 5. **Run and generate the results for the PBBS benchmarks**
    ```bash
-   cd <repo_root>/pbbs/scripts
+   cd scheduler-augmentation/pbbs/scripts
    nohup ./main_script.sh &
    ```
-   * `<repo_root>/pbbs/result` directory will contain the generated results, tables, and the plot:
+   * `scheduler-augmentation/pbbs/result` directory will contain the generated results, tables, and the plot:
      * `run_unaug.out` and `run_aug.out`: Logs from the unaugmented and augmented benchmark executions.
      * `unaug.json` and `aug.json`: Processor-wise raw timing results for each benchmark.
      * `pbbs_table_1_40_80.txt`: The table with PBBS results for $P = 1, 40, 80$.
