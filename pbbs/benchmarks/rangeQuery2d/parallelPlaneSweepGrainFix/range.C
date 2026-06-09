@@ -77,15 +77,15 @@ struct RangeQuery {
 };
 
 long range(Points const &points, Queries const &queries, bool verbose) {
-  std::cout << "RANGE START" << std::endl;
+  // std::cout << "RANGE START" << std::endl;
   long total;
   parlay::internal::timer t("range", verbose);
 
-  parlay::get_current_vertex()->phase = 1;
+  // parlay::get_current_vertex()->phase = 1;
   RangeQuery r(points);
   t.next("build");
 
-  parlay::get_current_vertex()->phase = 2;
+  // parlay::get_current_vertex()->phase = 2;
   total = parlay::reduce(parlay::map(queries, [&] (query q) {
               return (long) r.count_in_range(q);}));
   /*auto result_s = parlay::map(queries, [&] (query q) {
@@ -113,9 +113,9 @@ long range(Points const &points, Queries const &queries, bool verbose) {
   cout << "total_check: " << total_check << endl;
 #endif
 
-  parlay::get_current_vertex()->phase = 3;
+  // parlay::get_current_vertex()->phase = 3;
   r.clear();
   t.next("clear");
-  std::cout << "RANGE END" << std::endl;
+  // std::cout << "RANGE END" << std::endl;
   return total;
 }
