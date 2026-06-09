@@ -1,27 +1,67 @@
 
-# ParlayLib - A Toolkit for Programming Parallel Algorithms on Shared-Memory Multicore Machines
+# Scheduler Augmentation - Granularity Analysis
 
-[![Build status](https://github.com/cmuparlay/parlaylib/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/cmuparlay/parlaylib/actions)
-[![codecov](https://codecov.io/gh/cmuparlay/parlaylib/branch/master/graph/badge.svg)](https://codecov.io/gh/cmuparlay/parlaylib)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+This branch presents a granularity analysis technique as described in
+the following paper.
+
+> *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs.*
+> Sam Westrick, Darshan Dinesh Kumar, and Seong-Heon Jung.
+> SPAA 2026
+
+A few key files:
+* [`include/parlay/scheduler.h`](include/parlay/scheduler.h) — the augmented scheduler (augmentation enabled by compiling with `-DPARLAY_AUG`)
+* [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h) — the `Vertex` class
+* [`pbbs/benchmarks/rangeQuery2d/`](pbbs/benchmarks/rangeQuery2d/) - the
+implementation of the range query benchmark studied here. We compare
+`parallelPlaneSweep` (the original PBBS implementation) against our
+`parallelPlaneSweepGrainFix` (with a modifed PAM GC to tune granularity).
 
 
-ParlayLib is a C++ library for developing efficient parallel algorithms and software on shared-memory multicore machines. It provides additional tools and primitives that go beyond what is available in the C++ standard library, and simplifies the task of programming provably efficient and scalable parallel algorithms. It consists of a sequence data type (analogous to std::vector), many parallel routines and algorithms, a work-stealing scheduler to support nested parallelism, and a scalable memory allocator. It has been developed over a period of seven years and used in a variety of software including the [PBBS benchmark suite](http://www.cs.cmu.edu/~pbbs/benchmarks.html), the [Ligra](http://jshun.github.io/ligra/), [Julienne](https://dl.acm.org/doi/pdf/10.1145/3087556.3087580), and [Aspen](https://github.com/ldhulipala/aspen) graph processing frameworks, the [Graph Based Benchmark Suite](https://github.com/ParAlg/gbbs), and the [PAM](https://cmuparlay.github.io/PAMWeb/) library for parallel balanced binary search trees, and an implementation of the TPC-H benchmark suite.
+Our implementation is a fork of
+[ParlayLib](https://cmuparlay.github.io/parlaylib/). Other scheduler
+augmentation experiments from the paper can be found on
+the other branches ([`master`](https://github.com/nyu-parcour/scheduler-augmentation/tree/master) and [`space-profiling`](https://github.com/nyu-parcour/scheduler-augmentation/tree/space-profiling)).
 
-Parlay is designed to be reasonably portable by being built upon mostly standards-compliant modern C++. It builds on [GCC](https://gcc.gnu.org/) and [Clang](https://clang.llvm.org/) on Linux, GCC and Apple Clang on OSX, and Microsoft Visual C++ ([MSVC](https://visualstudio.microsoft.com/vs/)) and [MinGW](http://www.mingw.org/) on Windows. It is also tested on GCC and Clang via Windows Subsystem for Linux ([WSL](https://docs.microsoft.com/en-us/windows/wsl/about)) and [Cygwin](https://www.cygwin.com/). Support beyond x86-64 has not yet been explored. We would warmly welcome contributions that seek to achieve this.
+## Reproducing the granularity analysis experiments
 
-# Documentation
+```
+./reproduce.sh
+```
 
-You can find Parlay's full reference documentation [here](https://cmuparlay.github.io/parlaylib/)
+This builds the benchmarks, generates input data, runs both versions
+single-threaded to collect granularity logs, and produces the plots.
 
-# Examples
+## Vertex definition
 
-Parlay comes with over 50 example applications that you can learn from. You can find them in the [examples](./examples) directory.
+`Vertex` ([`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h))
+represents a node in the parallel DAG. Each vertex accumulates:
+* `work` — wall-clock time (nanoseconds) of serial work executed at this node
+* `no_forks` — number of fork operations spawned beneath this node
+* `phase` — an integer tag set by the application to distinguish execution phases
 
-# Developer documentation
+At each join, the vertex accumulates work and forks from both children. If the
+total work exceeds 5000 ns, it logs a line to record the work-per-fork
+ratio for the subdag associated with that join-point:
 
-If you are interested in contributing to Parlay, the following pages describe useful information about our testing and benchmarking setups. If you just want to use Parlay in your own projects, these links are not relevant to you.
+```
+<phase> <work_ns> <forks> <work_ns/forks>
+```
 
-* [Static analysis](./analysis/README.md)
-* [Unit tests](./test/README.md)
-* [Benchmarks](./benchmark/README.md)
+## Range query benchmark
+
+There are two versions of the 2D range query benchmark under
+[`pbbs/benchmarks/rangeQuery2d/`](pbbs/benchmarks/rangeQuery2d/):
+
+**`parallelPlaneSweep`** (called `rq2d` in the paper)
+— uses the stock [PAM](https://github.com/cmuparlay/PAM) library.
+
+**`parallelPlaneSweepGrainFix`** (called `rq2d_ours` in the paper) —
+uses a lightly modified PAM (`pam-gc-opt`,
+branch `parsweep_exp` of `github.com/nyu-parcour/PAM`) whose GC
+parallelization heuristic has been tuned to avoid generating computations that
+are too fine-grained.
+
+Both versions instrument three phases via `get_current_vertex()->phase`:
+1. Build (plane sweep construction)
+2. Query (batch range counting)
+3. Clear (PAM GC)
