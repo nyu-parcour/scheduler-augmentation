@@ -73,6 +73,7 @@ tests = [
     ["delaunayRefine/incrementalRefine",True,0],
     
     ["rangeQuery2d/parallelPlaneSweep",True,0],
+    ["rangeQuery2d/parallelPlaneSweepGrainFix",True,0],
     # ["rangeQuery2d/serial",False,0],
 
     ["nBody/parallelCK",True,0],
