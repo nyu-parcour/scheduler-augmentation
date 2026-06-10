@@ -5,10 +5,14 @@ This repository contains the source code for the paper *"Scheduler Augmentation:
 # Repository Structure
 
 * It starts from a fork of [ParlayLib](https://github.com/cmuparlay/parlaylib).
-* The `include/parlay/scheduler.h` file contains the changes implemented to extend ParlayLib's work-stealing scheduler with scheduler augmentation.
-* The `include/parlay/internal/vertex.h` file contains the `EvaluationVertex` (used for the Evaluation section in the paper), measuring work, span, and the number of forks.
+* The [`include/parlay/scheduler.h`](include/parlay/scheduler.h) file contains the changes implemented to extend ParlayLib's work-stealing scheduler with scheduler augmentation.
+* The [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h) file contains the Vertex definition
 * The `eval` directory contains the ParlayLib benchmarks and related scripts for experimentation.
 * The `pbbs` directory contains the [PBBS](https://github.com/cmuparlay/pbbsbench) benchmarks and related scripts for experimentation.
+* 3 main branches with the following objectives:
+    * `master` branch: Contains the `EvaluationVertex`, measuring work, span, and the number of forks. This branch can be used to the reproduce the results of the evaluation section (section 6) of the paper, specifically, Table 1 and Figure 12.
+    * `grain-analysis` branch: Contains the `GrainAnalysisVertex` used to perform granularity analysis. This branch can be used to reproduce the results of the granularity analysis section and the parallel range query case study (sections 3 and 3.1) of the paper, specifically, Figure 5.
+    * `space-profiling` branch: Contains the `SpaceVertex` used to perform space profiling. This branch can be used to reproduce the results of the space profiling section and the quickhull case study (sections 4 and 4.1) of the paper, specifically, Figure 9.
 
 # How to Run
 
