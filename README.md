@@ -1,6 +1,9 @@
 # Scheduler Augmentation
 
-This repository contains the source code for the paper *"Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs"* by Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung, accepted into the ACM Symposium on Parallelism in Algorithms and Architectures (SPAA) 2026.
+This repository contains the source code for the following paper 
+> *"Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs"* 
+> Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung
+> ACM Symposium on Parallelism in Algorithms and Architectures (SPAA) 2026.
 
 # Repository Structure
 
@@ -9,10 +12,11 @@ This repository contains the source code for the paper *"Scheduler Augmentation:
 * The [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h) file contains the Vertex definition
 * The `eval` directory contains the ParlayLib benchmarks and related scripts for experimentation.
 * The `pbbs` directory contains the [PBBS](https://github.com/cmuparlay/pbbsbench) benchmarks and related scripts for experimentation.
-* 3 main branches with the following objectives:
-    * `master` branch: Contains the `EvaluationVertex`, measuring work, span, and the number of forks. This branch can be used to the reproduce the results of the evaluation section (section 6) of the paper, specifically, Table 1 and Figure 12.
-    * `grain-analysis` branch: Contains the `GrainAnalysisVertex` used to perform granularity analysis. This branch can be used to reproduce the results of the granularity analysis section and the parallel range query case study (sections 3 and 3.1) of the paper, specifically, Figure 5.
-    * `space-profiling` branch: Contains the `SpaceVertex` used to perform space profiling. This branch can be used to reproduce the results of the space profiling section and the quickhull case study (sections 4 and 4.1) of the paper, specifically, Figure 9.
+* 3 branches with the following objectives:
+    * `master` branch: Contains the `EvaluationVertex`, measuring work, span, and the number of forks. This branch can be used to reproduce the results of the evaluation section (section 6) of the paper.
+    * `grain-analysis` branch: Contains the `GrainAnalysisVertex` used to perform granularity analysis. This branch can be used to reproduce the results of the granularity analysis section and the parallel range query case study (sections 3 and 3.1) of the paper.
+    * `space-profiling` branch: Contains the `SpaceVertex` used to perform space profiling. This branch can be used to reproduce the results of the space profiling section and the quickhull case study (sections 4 and 4.1) of the paper.
+* Each branch's README contains the necessary details to reproduce the results 
 
 # How to Run
 
