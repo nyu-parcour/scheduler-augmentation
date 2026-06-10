@@ -27,6 +27,7 @@ tests = [
     ["delaunayTriangulation/incrementalDelaunay", True, 0],
     ["delaunayRefine/incrementalRefine", True, 0],
     ["rangeQuery2d/parallelPlaneSweep", True, 0],
+    ["rangeQuery2d/parallelPlaneSweepGrainFix",True,0],
     ["nBody/parallelCK", True, 0],
 ]
 
@@ -52,6 +53,7 @@ DATASET_MAPPING = {
     "delaunayTriangulation/incrementalDelaunay": "2Dkuzmin_10M",
     "delaunayRefine/incrementalRefine": "2DkuzminDelaunay_5000000",
     "rangeQuery2d/parallelPlaneSweep": "2Dkuzmin_10M",
+    "rangeQuery2d/parallelPlaneSweepGrainFix": "2Dkuzmin_10M",
     "nBody/parallelCK": "3DonSphere_1000000",
 }
 
