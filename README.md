@@ -1,7 +1,7 @@
 # Scheduler Augmentation
 
 This repository contains the source code for the following paper 
-> *"Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs."* 
+> *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs.* 
 > Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung.
 > ACM Symposium on Parallelism in Algorithms and Architectures (SPAA) 2026.
 
