@@ -1,0 +1,915 @@
+#!/usr/bin/env python3
+"""Interactive visualization of a parlay fork-join trace.
+
+Usage:  ./visualize <trace-file> [-o out.html] [--no-open]
+
+Reads the trace produced by a -DPARLAY_AUG binary (see
+include/parlay/internal/vertex.h for the format), reconstructs the
+series-parallel computation graph from the depa tids, and writes a
+self-contained interactive HTML page (pan/zoom, level-of-detail).
+"""
+
+import argparse
+import json
+import os
+import sys
+import webbrowser
+
+# --- depa tid arithmetic (mirror of include/parlay/internal/depa.h) ---------
+
+TREE_DEPTH_BITS = 6
+TREE_DEPTH_MASK = (1 << TREE_DEPTH_BITS) - 1
+
+
+def fork_tids(path, depth):
+    h = depth & TREE_DEPTH_MASK
+    d = depth + (1 << TREE_DEPTH_BITS) + 1
+    left = (path & ~(1 << h)) | (1 << (h + 1))
+    right = (path | (1 << h)) | (1 << (h + 1))
+    return (left, d), (right, d)
+
+
+def dag_depth(tid):
+    return tid[1] >> TREE_DEPTH_BITS
+
+
+def task_key(tid):
+    """Identity of the task a tid belongs to: as a task forks and joins, its
+    tree depth and path bits below the tree depth stay invariant."""
+    path, depth = tid
+    d = depth & TREE_DEPTH_MASK
+    return (d, path & ((1 << (d + 1)) - 1))
+
+
+# --- trace parsing -----------------------------------------------------------
+
+def new_round(label):
+    return {"label": label, "records": {}, "root": None, "dups": 0,
+            "begin_ts": None}
+
+
+def parse_trace(path):
+    """Split the trace into rounds (one per augment call, plus anything
+    traced outside augment, e.g. warmup)."""
+    rounds = []
+    cur = new_round("outside augment (warmup)")
+    n_between = 0
+
+    def close(nxt):
+        nonlocal cur
+        if cur["records"] or cur["root"] is not None:
+            rounds.append(cur)
+        cur = nxt
+
+    with open(path) as f:
+        for lineno, line in enumerate(f, 1):
+            parts = line.split()
+            if not parts:
+                continue
+            kind = parts[0]
+            if kind == "J":
+                if len(parts) != 12:
+                    sys.exit("error: line %d has %d fields, expected 12 -- "
+                             "stale trace? rebuild the .aug binary and rerun"
+                             % (lineno, len(parts)))
+                p = (int(parts[1], 16), int(parts[2]))
+                rec = {
+                    "j": (int(parts[3], 16), int(parts[4])),
+                    "ft": int(parts[5]), "jt": int(parts[6]),
+                    "pw": int(parts[7]),
+                    "lf": int(parts[8]), "lw": int(parts[9]),
+                    "rf": int(parts[10]), "rw": int(parts[11]),
+                }
+                if p in cur["records"]:
+                    cur["dups"] += 1
+                cur["records"][p] = rec
+            elif kind == "A":
+                nxt = new_round("round " + parts[1])
+                nxt["begin_ts"] = int(parts[2])
+                close(nxt)
+            elif kind == "R":
+                cur["root"] = {
+                    "threads": int(parts[1]),
+                    "f": int(parts[2]),
+                    "w": int(parts[3]),
+                    "ts": int(parts[4]),
+                }
+                n_between += 1
+                close(new_round("outside augment (#%d)" % n_between))
+            else:
+                print("warning: unrecognized line %d: %r" % (lineno, line.rstrip()),
+                      file=sys.stderr)
+    close(None)
+    return rounds
+
+
+# --- series-parallel tree reconstruction -------------------------------------
+
+def build_task(birth, records, index, total, bound=None, final_tid=None):
+    """Follow the chain of join records for the task born with tid `birth`.
+    `total` = (forks, work) of this task's whole subtree, if known (from the
+    parent's record, or from the R record for the root).
+    If `final_tid` is a one-element list, the tid at the end of the chain is
+    written into it (the root vertex keeps this tid into the next partition).
+
+    A task's chain can have gaps: a below-cutoff join is not emitted, but a
+    later join of the same task may be. `index` maps task_key -> keys sorted
+    by dag depth, so a broken chain resumes at the next record of the same
+    task with dag depth in [current, bound). The gap's hidden work folds into
+    the sequential segment (pw is cumulative). `bound` is the dag depth of
+    the enclosing join, which separates this task from later same-key
+    incarnations (a sibling from a later fork of the same parent).
+
+    Returns a node:
+      task:  {w, f, g: [segment ns...], b: [[left, right, ft, jt], ...]}
+             (len(g) == len(b) + 1; segments interleave the fork-join blocks;
+             ft/jt are the block's fork/join wall-clock times relative to the
+             round start)
+      leaf:  {w, f}  (a subtree below the trace cutoff, collapsed;
+             f == 0 means it ran purely sequentially)
+    """
+    segs = []
+    blocks = []
+    consumed = 0  # parent's cumulative work at the last join
+    cur = birth
+    while True:
+        if cur not in records:
+            nxt = resume_chain(cur, records, index, bound)
+            if nxt is None:
+                break
+            cur = nxt
+        rec = records.pop(cur)
+        segs.append(max(rec["pw"] - consumed, 0))
+        lb, rb = fork_tids(*cur)
+        child_bound = dag_depth(rec["j"])
+        left = build_task(lb, records, index, (rec["lf"], rec["lw"]), child_bound)
+        right = build_task(rb, records, index, (rec["rf"], rec["rw"]), child_bound)
+        blocks.append([left, right, rec["ft"], rec["jt"]])
+        consumed = rec["pw"] + rec["lw"] + rec["rw"]
+        cur = rec["j"]
+
+    if final_tid is not None:
+        final_tid[0] = cur
+
+    if total is not None:
+        forks, work = total
+    else:
+        # No R record for this partition: estimate totals from what we saw.
+        forks = sum(b[0]["f"] + b[1]["f"] + 1 for b in blocks)
+        work = consumed
+
+    if not blocks:
+        return {"w": work, "f": forks}
+
+    segs.append(max(work - consumed, 0))
+    return {"w": work, "f": forks, "g": segs, "b": blocks}
+
+
+def resume_chain(cur, records, index, bound):
+    """Find the next unconsumed record of cur's task: same task_key, dag
+    depth in [dag_depth(cur), bound). Chains have strictly increasing dag
+    depth, and everything belonging to a later same-key incarnation sits at
+    dag depth >= bound."""
+    best = None
+    for key in index.get(task_key(cur), ()):
+        d = dag_depth(key)
+        if d < dag_depth(cur) or (bound is not None and d >= bound):
+            continue
+        if key not in records:
+            continue
+        if best is None or d < dag_depth(best):
+            best = key
+    return best
+
+
+def build_round(rnd, birth):
+    """`birth` is the root vertex's tid at the start of this partition:
+    (1, 0) after each augment reset, or wherever the previous partition's
+    chain ended otherwise. Returns (round-dict, final-tid)."""
+    records = dict(rnd["records"])
+    n_records = len(records)
+    index = {}
+    for key in records:
+        index.setdefault(task_key(key), []).append(key)
+    root_info = rnd["root"]
+    total = (root_info["f"], root_info["w"]) if root_info else None
+    final = [birth]
+    tree = build_task(birth, records, index, total, None, final)
+
+    # Normalize block timestamps to the round start; dur is the round's
+    # wall-clock length.
+    stamps = [t for r in rnd["records"].values() for t in (r["ft"], r["jt"])]
+    t0 = rnd["begin_ts"] if rnd["begin_ts"] is not None else (
+        min(stamps) if stamps else None)
+    end = root_info["ts"] if root_info else (max(stamps) if stamps else None)
+    dur = end - t0 if t0 is not None and end is not None else None
+    if t0 is not None:
+        shift_times(tree, t0)
+
+    return {
+        "label": rnd["label"],
+        "threads": root_info["threads"] if root_info else None,
+        "tree": tree,
+        "dur": dur,
+        "records": n_records,
+        "orphans": len(records),
+        "dups": rnd["dups"],
+    }, final[0]
+
+
+def shift_times(node, t0):
+    for b in node.get("b", ()):
+        b[2] = max(b[2] - t0, 0)
+        b[3] = max(b[3] - t0, 0)
+        shift_times(b[0], t0)
+        shift_times(b[1], t0)
+
+
+# --- HTML generation ----------------------------------------------------------
+
+def make_html(title, rounds_json):
+    html = HTML_TEMPLATE
+    html = html.replace("__TITLE__", title)
+    html = html.replace("__DATA__", rounds_json.replace("</", "<\\/"))
+    return html
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("trace", help="trace file produced by a PARLAY_AUG binary")
+    ap.add_argument("-o", "--output", help="output HTML file "
+                    "(default: <trace>.html)")
+    ap.add_argument("--no-open", action="store_true",
+                    help="don't open the result in a web browser")
+    args = ap.parse_args()
+
+    rounds = parse_trace(args.trace)
+    if not rounds:
+        print("error: no trace records found in %s" % args.trace, file=sys.stderr)
+        sys.exit(1)
+
+    built = []
+    tid = (1, 0)
+    for r in rounds:
+        if r["label"].startswith("round"):
+            tid = (1, 0)  # augment resets the root vertex
+        b, tid = build_round(r, tid)
+        built.append(b)
+    for b in built:
+        if b["orphans"]:
+            print("warning: %s: %d join records unreachable from the root"
+                  % (b["label"], b["orphans"]), file=sys.stderr)
+        if b["dups"]:
+            print("warning: %s: %d duplicate join records" % (b["label"], b["dups"]),
+                  file=sys.stderr)
+
+    out = args.output or (os.path.splitext(args.trace)[0] + ".html")
+    title = os.path.basename(args.trace)
+    data = json.dumps(built, separators=(",", ":"))
+    with open(out, "w") as f:
+        f.write(make_html(title, data))
+
+    total_records = sum(b["records"] for b in built)
+    print("wrote %s  (%d rounds, %d join records)" % (out, len(built), total_records))
+    if not args.no_open:
+        webbrowser.open("file://" + os.path.abspath(out))
+
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ &mdash; fork-join graph</title>
+<style>
+  :root {
+    --surface: #fcfcfb;
+    --page: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1a19;
+      --page: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --border: rgba(255,255,255,0.10);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page); color: var(--ink);
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 10px 16px 8px;
+    border-bottom: 1px solid var(--hairline);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header h1 .file { color: var(--ink-2); font-weight: 400; }
+  select, button {
+    font: inherit; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+  }
+  button:hover { border-color: var(--muted); cursor: pointer; }
+  #stats { color: var(--ink-2); }
+  #stats b { color: var(--ink); font-weight: 600; }
+  .legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .ramp { width: 90px; height: 10px; border-radius: 5px; border: 1px solid var(--border); }
+  .swatch { width: 22px; height: 12px; border-radius: 3px; border: 1px solid var(--border); position: relative; overflow: hidden; }
+  .swatch::after {
+    content: ""; position: absolute; inset: 0;
+    background: repeating-linear-gradient(45deg, transparent 0 3px, var(--page) 3px 5px);
+  }
+  .hint { color: var(--muted); font-size: 12px; }
+  footer {
+    padding: 8px 16px;
+    border-top: 1px solid var(--hairline);
+    display: flex; align-items: center; gap: 12px;
+  }
+  footer.hidden { display: none; }
+  footer button { min-width: 34px; }
+  #scrub { flex: 1; accent-color: #2a78d6; }
+  #speed { width: 110px; accent-color: #2a78d6; }
+  #yscale { width: 90px; accent-color: #2a78d6; vertical-align: middle; }
+  .yscale-label { color: var(--muted); font-size: 12px; }
+  #clock { font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
+  #clock b { color: var(--ink); font-weight: 600; }
+  #speedLabel { color: var(--ink-2); min-width: 92px; white-space: nowrap; }
+  main { position: relative; flex: 1; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+           background: var(--surface); display: block; cursor: grab; }
+  canvas.panning { cursor: grabbing; }
+  #tooltip {
+    position: absolute; pointer-events: none; display: none; z-index: 10;
+    background: var(--surface); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+    padding: 7px 10px; font-size: 12px; max-width: 260px;
+  }
+  #tooltip .tt-kind { color: var(--ink-2); margin-bottom: 3px; }
+  #tooltip table { border-collapse: collapse; }
+  #tooltip td { padding: 0 0 1px 0; color: var(--ink-2); }
+  #tooltip td + td { padding-left: 10px; color: var(--ink);
+                     font-variant-numeric: tabular-nums; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fork-join graph <span class="file">__TITLE__</span></h1>
+  <label>round <select id="round"></select></label>
+  <button id="fit">fit</button>
+  <label class="yscale-label" title="lengthen/shorten boxes vertically">
+    height <input id="yscale" type="range" min="-2" max="2.585" step="0.01" value="0">
+  </label>
+  <span id="stats"></span>
+  <span class="legend">
+    <span id="rampBox" class="ramp"></span> work (log)
+    <span id="hatchBox" class="swatch"></span> collapsed (&lt; cutoff)
+  </span>
+  <span class="hint">drag to pan &middot; scroll to zoom &middot; time flows down</span>
+</header>
+<main>
+  <canvas id="c"></canvas>
+  <div id="tooltip"></div>
+</main>
+<footer id="playbar">
+  <button id="play" title="play/pause (space)">&#9654;</button>
+  <button id="rewind" title="back to start">&#9198;</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0">
+  <span id="clock"></span>
+  <input id="speed" type="range" min="0" max="3" step="0.01" value="1"
+         title="playback slowdown">
+  <span id="speedLabel"></span>
+</footer>
+<script>
+"use strict";
+const DATA = __DATA__;
+
+// ---- palette (validated sequential blue ramp; see dataviz reference) -------
+const RAMP = ["#cde2fb","#b7d3f6","#9ec5f4","#86b6ef","#6da7ec","#5598e7",
+              "#3987e5","#2a78d6","#256abf","#1c5cab","#184f95","#104281","#0d366b"];
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+let theme = {};
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  theme = {
+    dark: darkQuery.matches,
+    surface: cs.getPropertyValue("--surface").trim(),
+    ink: cs.getPropertyValue("--ink").trim(),
+    ink2: cs.getPropertyValue("--ink-2").trim(),
+    muted: cs.getPropertyValue("--muted").trim(),
+    hairline: cs.getPropertyValue("--hairline").trim(),
+  };
+}
+function hexRGB(h) {
+  return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+}
+// t in [0,1] -> ramp color. On the dark surface the dark end recedes, so the
+// mapping flips: more work = lighter/brighter there, darker on light.
+function rampColor(t) {
+  if (theme.dark) t = 1 - t;
+  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
+  const i = Math.min(RAMP.length - 2, Math.floor(x)), fr = x - i;
+  const a = hexRGB(RAMP[i]), b = hexRGB(RAMP[i+1]);
+  return "rgb(" + Math.round(a[0]+(b[0]-a[0])*fr) + "," +
+                  Math.round(a[1]+(b[1]-a[1])*fr) + "," +
+                  Math.round(a[2]+(b[2]-a[2])*fr) + ")";
+}
+
+// ---- formatting -------------------------------------------------------------
+function fmtNs(ns) {
+  if (ns == null) return "?";
+  if (ns < 1e3) return Math.round(ns) + " ns";
+  if (ns < 1e6) return (ns/1e3).toFixed(1) + " µs";
+  if (ns < 1e9) return (ns/1e6).toFixed(2) + " ms";
+  return (ns/1e9).toFixed(3) + " s";
+}
+function fmtCount(n) { return n.toLocaleString("en-US"); }
+
+// ---- layout (world coordinates) ---------------------------------------------
+const LEAF_W = 14, GAP = 12, FORK_H = 20, JOIN_H = 20, NODE_R = 3.5;
+let yScale = 1;  // y-axis scale slider: stretches/squashes box heights
+function timeH(ns) {
+  return (ns <= 0 ? 2 : 4 + 18 * Math.log2(1 + ns / 5e4)) * yScale;
+}
+
+function layout(n) {
+  if (!n.b) {
+    n._w = LEAF_W;
+    n._h = Math.max(6 * yScale, timeH(n.w));
+    return;
+  }
+  let h = 0, w = LEAF_W, mxc = 0;
+  for (let i = 0; i < n.b.length; i++) {
+    h += timeH(n.g[i]);
+    const l = n.b[i][0], r = n.b[i][1];
+    layout(l); layout(r);
+    h += (FORK_H + JOIN_H) * yScale + Math.max(l._h, r._h);
+    w = Math.max(w, l._w + GAP + r._w);
+    mxc = Math.max(mxc, l._w, r._w);
+  }
+  h += timeH(n.g[n.b.length]);
+  n._w = w; n._h = h;
+  n._mxc = mxc;  // widest immediate child, for level-of-detail
+}
+
+// ---- viewer ------------------------------------------------------------------
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("tooltip");
+let view = { x: 0, y: 0, k: 1 };      // world -> screen: s = (w - view.xy) * k
+let round = null;                     // current round object
+let colorDomain = { lo: 1e4, hi: 1e9 };
+let hatch = null;
+
+function makeHatch() {
+  const p = document.createElement("canvas");
+  p.width = p.height = 8;
+  const g = p.getContext("2d");
+  g.strokeStyle = theme.dark ? "rgba(13,13,13,0.55)" : "rgba(252,252,251,0.75)";
+  g.lineWidth = 1.6;
+  g.beginPath();
+  for (let o = -8; o <= 16; o += 4) { g.moveTo(o, 8); g.lineTo(o + 8, 0); }
+  g.stroke();
+  hatch = ctx.createPattern(p, "repeat");
+}
+
+function colorForNs(ns) {
+  const lo = Math.log(colorDomain.lo), hi = Math.log(colorDomain.hi);
+  const t = (Math.log(Math.max(ns, 1)) - lo) / Math.max(hi - lo, 1e-9);
+  return rampColor(0.08 + 0.92 * Math.max(0, Math.min(1, t)));
+}
+
+function sx(wx) { return (wx - view.x) * view.k; }
+function sy(wy) { return (wy - view.y) * view.k; }
+
+let W = 0, H = 0;  // canvas CSS size
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+// Level of detail: a subtree expands only when its box is reasonably large
+// AND its widest immediate child would be at least CHILD_PX wide on screen
+// -- otherwise it draws as one aggregate glyph. Dense fans of uniformly
+// small children (where hovering is ambiguous) therefore collapse eagerly
+// and the collapse propagates upward as you zoom out, while a large subtree
+// with one small sibling leaf still expands.
+const LOD_H = 24, LOD_W = 10, CHILD_PX = 10;
+function tooSmall(n) {
+  return n._h * view.k < LOD_H || n._w * view.k < LOD_W ||
+         n._mxc * view.k < CHILD_PX;
+}
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// frac in [0,1]: how much of this element has "happened" at the current
+// playback time. 1 = fully drawn (the static view); partial glyphs fill
+// top-down, matching time flowing down the page.
+function drawGlyph(n, wx, wy, hatched, frac) {
+  const x = sx(wx), y = sy(wy);
+  const w = Math.max(n._w * view.k, 2.5), h = Math.max(n._h * view.k, 2.5);
+  roundRect(x, y, w, h, 3);
+  if (frac >= 1) {
+    ctx.fillStyle = colorForNs(n.w);
+    ctx.fill();
+    if (hatched && w > 6 && h > 6) { ctx.fillStyle = hatch; ctx.fill(); }
+    ctx.strokeStyle = theme.hairline;
+    ctx.lineWidth = 1;
+  } else {
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = colorForNs(n.w);
+    ctx.fillRect(x, y, w, h * frac);
+    if (hatched && w > 6 && h > 6) { ctx.fillStyle = hatch; ctx.fillRect(x, y, w, h * frac); }
+    ctx.restore();
+    roundRect(x, y, w, h, 3);
+    ctx.strokeStyle = frac > 0 ? theme.ink2 : theme.hairline;  // active frontier
+    ctx.lineWidth = frac > 0 ? 1.5 : 1;
+  }
+  ctx.stroke();
+}
+
+function drawSegment(cx, y0, y1, ns, frac) {
+  const x = sx(cx), a = sy(y0), b = sy(y1);
+  const bb = a + (b - a) * frac;
+  if (bb - a < 0.5) return;
+  const w = Math.max(2, Math.min(8, 5 * Math.sqrt(view.k)));
+  ctx.fillStyle = colorForNs(ns);
+  roundRect(x - w / 2, a, w, bb - a, w / 2);
+  ctx.fill();
+}
+
+function drawNodeDot(cx, cy) {
+  const r = Math.max(1.5, Math.min(5, NODE_R * Math.sqrt(view.k)));
+  ctx.beginPath();
+  ctx.arc(sx(cx), sy(cy), r, 0, 2 * Math.PI);
+  ctx.fillStyle = theme.ink2;
+  ctx.fill();
+}
+
+function drawEdge(x0, y0, x1, y1) {
+  ctx.beginPath();
+  ctx.moveTo(sx(x0), sy(y0));
+  const my = (y0 + y1) / 2;
+  ctx.bezierCurveTo(sx(x0), sy(my), sx(x1), sy(my), sx(x1), sy(y1));
+  ctx.strokeStyle = theme.muted;
+  ctx.lineWidth = Math.max(0.75, Math.min(2, 1.2 * Math.sqrt(view.k)));
+  ctx.stroke();
+}
+
+function offscreen(wx, wy, ww, wh) {
+  return sx(wx + ww) < -20 || sx(wx) > W + 20 || sy(wy + wh) < -20 || sy(wy) > H + 20;
+}
+
+// Playback: playT is the current replay time in ns since the round start,
+// or null for the static (everything drawn) view. Each element carries a
+// wall-clock window [t0, t1]: blocks use their recorded fork/join times,
+// segments span the gap between the surrounding joins/forks, and children
+// inherit their block's window.
+let playT = null;
+
+function progress(t0, t1) {
+  if (playT === null) return 1;
+  if (playT <= t0) return 0;
+  if (t1 <= t0 || playT >= t1) return 1;
+  return (playT - t0) / (t1 - t0);
+}
+
+function drawTask(n, wx, wy, t0, t1) {
+  if (offscreen(wx, wy, n._w, n._h)) return;
+  if (playT !== null && playT <= t0) return;
+  if (!n.b) { drawGlyph(n, wx + n._w / 2 - LEAF_W / 2, wy, n.f > 0, progress(t0, t1)); return; }
+  if (tooSmall(n)) { drawGlyph(n, wx, wy, false, progress(t0, t1)); return; }
+
+  const cx = wx + n._w / 2;
+  let y = wy;
+  let prev = t0;
+  for (let i = 0; i < n.b.length; i++) {
+    const bft = n.b[i][2] == null ? prev : n.b[i][2];
+    const bjt = n.b[i][3] == null ? bft : n.b[i][3];
+    const segH = timeH(n.g[i]);
+    drawSegment(cx, y, y + segH, n.g[i], progress(prev, bft));
+    y += segH;
+    if (playT !== null && playT <= bft) return;  // rest of the chain is later
+    const l = n.b[i][0], r = n.b[i][1];
+    const tot = l._w + GAP + r._w;
+    const lx = cx - tot / 2, rx = lx + l._w + GAP;
+    const childTop = y + FORK_H * yScale;
+    const inner = Math.max(l._h, r._h);
+    const joinY = childTop + inner + JOIN_H * yScale;
+    drawEdge(cx, y + NODE_R, lx + l._w / 2, childTop);
+    drawEdge(cx, y + NODE_R, rx + r._w / 2, childTop);
+    const joined = playT === null || playT >= bjt;
+    if (joined) {
+      drawEdge(lx + l._w / 2, childTop + l._h, cx, joinY - NODE_R);
+      drawEdge(rx + r._w / 2, childTop + r._h, cx, joinY - NODE_R);
+    }
+    drawNodeDot(cx, y + NODE_R);
+    drawTask(l, lx, childTop, bft, bjt);
+    drawTask(r, rx, childTop, bft, bjt);
+    if (joined) drawNodeDot(cx, joinY - NODE_R);
+    y = joinY;
+    prev = bjt;
+  }
+  const segH = timeH(n.g[n.b.length]);
+  drawSegment(cx, y, y + segH, n.g[n.b.length], progress(prev, t1));
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  if (!round) return;
+  drawTask(round.tree, 0, 0, 0, round.dur == null ? 0 : round.dur);
+}
+
+// ---- hit testing --------------------------------------------------------------
+function hitTask(n, wx, wy, mx, my) {
+  if (mx < wx || mx > wx + n._w || my < wy || my > wy + n._h) return null;
+  if (!n.b) return { n: n, kind: n.f > 0 ? "collapsed" : "leaf" };
+  if (tooSmall(n)) return { n: n, kind: "lod" };
+  const cx = wx + n._w / 2;
+  let y = wy;
+  for (let i = 0; i < n.b.length; i++) {
+    const segH = timeH(n.g[i]);
+    if (my < y + segH) {
+      return Math.abs(mx - cx) < 8 / view.k
+        ? { n: n, kind: "seg", ns: n.g[i] } : { n: n, kind: "task" };
+    }
+    y += segH;
+    const l = n.b[i][0], r = n.b[i][1];
+    const tot = l._w + GAP + r._w;
+    const lx = cx - tot / 2, rx = lx + l._w + GAP;
+    const childTop = y + FORK_H * yScale;
+    const inner = Math.max(l._h, r._h);
+    const joinY = childTop + inner + JOIN_H * yScale;
+    if (my < joinY) {
+      const hl = hitTask(l, lx, childTop, mx, my);
+      if (hl) return hl;
+      const hr = hitTask(r, rx, childTop, mx, my);
+      if (hr) return hr;
+      return { n: n, kind: "task" };
+    }
+    y = joinY;
+  }
+  const segH = timeH(n.g[n.b.length]);
+  if (my < y + segH && Math.abs(mx - cx) < 8 / view.k)
+    return { n: n, kind: "seg", ns: n.g[n.b.length] };
+  return { n: n, kind: "task" };
+}
+
+function tooltipHTML(hit) {
+  const n = hit.n;
+  const kinds = {
+    collapsed: "Collapsed subtree (below trace cutoff)",
+    leaf: "Sequential leaf",
+    lod: "Subtree — zoom in for detail",
+    seg: "Sequential segment",
+    task: "Subtree",
+  };
+  let rows = "";
+  function row(k, v) { rows += "<tr><td>" + k + "</td><td>" + v + "</td></tr>"; }
+  if (hit.kind === "seg") {
+    row("duration", fmtNs(hit.ns));
+  } else {
+    row("work", fmtNs(n.w));
+    row("forks", fmtCount(n.f));
+    if (n.f > 0) row("avg work / fork", fmtNs(n.w / n.f));
+  }
+  return '<div class="tt-kind">' + kinds[hit.kind] + "</div><table>" + rows + "</table>";
+}
+
+// ---- interaction ----------------------------------------------------------------
+let panning = false, px = 0, py = 0, moved = false;
+canvas.addEventListener("pointerdown", e => {
+  panning = true; moved = false; px = e.clientX; py = e.clientY;
+  canvas.classList.add("panning");
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", e => {
+  const rect = canvas.getBoundingClientRect();
+  if (panning) {
+    const dx = e.clientX - px, dy = e.clientY - py;
+    if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+    view.x -= dx / view.k; view.y -= dy / view.k;
+    px = e.clientX; py = e.clientY;
+    tooltip.style.display = "none";
+    draw();
+    return;
+  }
+  if (!round) return;
+  const mx = (e.clientX - rect.left) / view.k + view.x;
+  const my = (e.clientY - rect.top) / view.k + view.y;
+  const hit = hitTask(round.tree, 0, 0, mx, my);
+  if (hit) {
+    tooltip.innerHTML = tooltipHTML(hit);
+    tooltip.style.display = "block";
+    const tx = Math.min(e.clientX - rect.left + 14, W - tooltip.offsetWidth - 8);
+    const ty = Math.min(e.clientY - rect.top + 14, H - tooltip.offsetHeight - 8);
+    tooltip.style.left = tx + "px";
+    tooltip.style.top = ty + "px";
+  } else {
+    tooltip.style.display = "none";
+  }
+});
+canvas.addEventListener("pointerup", () => {
+  panning = false;
+  canvas.classList.remove("panning");
+});
+canvas.addEventListener("pointerleave", () => { tooltip.style.display = "none"; });
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const f = Math.exp(-e.deltaY * 0.0016);
+  const k2 = Math.max(1e-4, Math.min(1e4, view.k * f));
+  view.x += mx / view.k - mx / k2;
+  view.y += my / view.k - my / k2;
+  view.k = k2;
+  tooltip.style.display = "none";
+  draw();
+}, { passive: false });
+
+function fit() {
+  if (!round) return;
+  const t = round.tree;
+  const k = Math.min(W / (t._w + 60), H / (t._h + 60));
+  view.k = Math.max(1e-4, Math.min(1e4, k));
+  view.x = t._w / 2 - W / 2 / view.k;
+  view.y = t._h / 2 - H / 2 / view.k;
+  draw();
+}
+document.getElementById("fit").addEventListener("click", fit);
+
+document.getElementById("yscale").addEventListener("input", e => {
+  const oldH = round ? round.tree._h : 1;
+  yScale = Math.pow(2, +e.target.value);
+  if (!round) return;
+  layout(round.tree);
+  // keep the world point at the vertical screen center roughly in place
+  const ratio = round.tree._h / oldH;
+  const cy = view.y + (H / 2) / view.k;
+  view.y = cy * ratio - (H / 2) / view.k;
+  draw();
+});
+
+// ---- playback -----------------------------------------------------------------
+// Replays the recorded execution in real time, slowed down by `speed`
+// (default 10x; the slider is log-scale 1x..1000x).
+const playBtn = document.getElementById("play");
+const rewindBtn = document.getElementById("rewind");
+const scrub = document.getElementById("scrub");
+const clockEl = document.getElementById("clock");
+const speedEl = document.getElementById("speed");
+const speedLabel = document.getElementById("speedLabel");
+let playing = false, speed = 10, lastFrame = 0;
+
+function speedFromSlider() {
+  speed = Math.pow(10, +speedEl.value);
+  const s = speed >= 100 ? Math.round(speed) : speed.toFixed(1);
+  speedLabel.textContent = s + "× slower";
+}
+speedEl.addEventListener("input", speedFromSlider);
+
+function updatePlaybackUI() {
+  playBtn.innerHTML = playing ? "&#9646;&#9646;" : "&#9654;";
+  const dur = round && round.dur != null ? round.dur : 0;
+  const t = playT === null ? dur : playT;
+  scrub.value = dur > 0 ? Math.round(1000 * t / dur) : 0;
+  clockEl.innerHTML = "<b>" + fmtNs(t) + "</b> / " + fmtNs(dur);
+}
+
+function frame(now) {
+  if (!playing) return;
+  playT += (now - lastFrame) * 1e6 / speed;  // ms of real time -> ns of trace time
+  lastFrame = now;
+  if (playT >= round.dur) { playT = round.dur; playing = false; }
+  updatePlaybackUI();
+  draw();
+  if (playing) requestAnimationFrame(frame);
+}
+
+function togglePlay() {
+  if (!round || round.dur == null || round.dur <= 0) return;
+  if (playing) {
+    playing = false;
+  } else {
+    if (playT === null || playT >= round.dur) playT = 0;
+    playing = true;
+    lastFrame = performance.now();
+    requestAnimationFrame(frame);
+  }
+  updatePlaybackUI();
+  draw();
+}
+playBtn.addEventListener("click", togglePlay);
+rewindBtn.addEventListener("click", () => {
+  playing = false; playT = null;
+  updatePlaybackUI();
+  draw();
+});
+scrub.addEventListener("input", () => {
+  if (!round || round.dur == null) return;
+  playing = false;
+  playT = round.dur * (+scrub.value) / 1000;
+  if (playT >= round.dur) playT = null;
+  updatePlaybackUI();
+  draw();
+});
+addEventListener("keydown", e => {
+  if (e.code === "Space" && e.target.tagName !== "INPUT" && e.target.tagName !== "SELECT") {
+    e.preventDefault();
+    togglePlay();
+  }
+});
+
+// ---- rounds ---------------------------------------------------------------------
+const sel = document.getElementById("round");
+DATA.forEach((r, i) => {
+  const o = document.createElement("option");
+  o.value = i;
+  o.textContent = r.label + " — " + fmtNs(r.dur) + ", " +
+                  fmtCount(r.records) + " records";
+  sel.appendChild(o);
+});
+function selectRound(i) {
+  round = DATA[i];
+  layout(round.tree);
+  colorDomain = { lo: 2e4, hi: Math.max(round.tree.w, 1e5) };
+  playing = false;
+  playT = null;
+  document.getElementById("playbar").classList.toggle(
+    "hidden", round.dur == null || round.dur <= 0);
+  speedFromSlider();
+  updatePlaybackUI();
+  const st = document.getElementById("stats");
+  st.innerHTML =
+    (round.threads != null ? "<b>" + round.threads + "</b> threads &middot; " : "") +
+    "<b>" + fmtNs(round.dur) + "</b> &middot; " +
+    fmtCount(round.records) + " joins traced";
+  fit();
+}
+sel.addEventListener("change", () => selectRound(+sel.value));
+
+// default: the augment round with the most work (fall back to any partition)
+let best = 0, bestAug = -1;
+DATA.forEach((r, i) => {
+  if (r.tree.w > DATA[best].tree.w) best = i;
+  const aug = r.label.startsWith("round");
+  if (aug && (bestAug < 0 || r.tree.w > DATA[bestAug].tree.w)) bestAug = i;
+});
+if (bestAug >= 0) best = bestAug;
+sel.value = best;
+
+// legend ramp
+function paintLegend() {
+  const stops = [];
+  for (let i = 0; i <= 10; i++) stops.push(rampColor(0.08 + 0.92 * i / 10));
+  document.getElementById("rampBox").style.background =
+    "linear-gradient(to right," + stops.join(",") + ")";
+  document.getElementById("hatchBox").style.background = rampColor(0.6);
+}
+
+function applyTheme() {
+  readTheme();
+  makeHatch();
+  paintLegend();
+  draw();
+}
+darkQuery.addEventListener("change", applyTheme);
+
+readTheme();
+makeHatch();
+paintLegend();
+new ResizeObserver(resize).observe(canvas);
+resize();
+selectRound(best);
+</script>
+</body>
+</html>
+"""
+
+if __name__ == "__main__":
+    main()

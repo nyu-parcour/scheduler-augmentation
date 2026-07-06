@@ -468,6 +468,7 @@ class fork_join_scheduler {
 #ifdef PARLAY_AUG
     Vertex* curr_v = Vertex::current;
     new (curr_v) Vertex();
+    Vertex::trace_round_begin();
     curr_v->start();
 #endif
     auto start_ts = std::chrono::high_resolution_clock::now();
@@ -476,6 +477,7 @@ class fork_join_scheduler {
     auto elapsed_wc = (std::chrono::duration_cast<std::chrono::nanoseconds>(stop_ts - start_ts)).count();
 #ifdef PARLAY_AUG
     curr_v->log(scheduler.logger, scheduler.num_threads);
+    Vertex::trace_round_end(scheduler.num_threads, curr_v->no_forks, curr_v->work);
     return std::make_pair(*curr_v, elapsed_wc);
 #else
     return std::make_pair(nullptr, elapsed_wc);

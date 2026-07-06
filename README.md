@@ -1,61 +1,48 @@
-# Scheduler Augmentation
+# Scheduler Augmentation: Computation Graph Visualization
 
-This repository contains the source code for the following paper 
-> *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs.* 
+This is an application of *scheduler augmentation*, described in the following paper:
+> *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs.*
 > Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung.
 > ACM Symposium on Parallelism in Algorithms and Architectures (SPAA) 2026.
 
-# Repository Structure
+This branch (`graph-viz`) offers interactive visualization of the computation graph:
+the augmented scheduler traces the fork-join structure of the computation to a file,
+and a small tool renders it as a self-contained interactive web page.
 
-* It starts from a fork of [ParlayLib](https://github.com/cmuparlay/parlaylib).
-* The [`include/parlay/scheduler.h`](include/parlay/scheduler.h) file contains the changes implemented to extend ParlayLib's work-stealing scheduler with scheduler augmentation.
-* The [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h) file contains the Vertex definition
-* The `eval` directory contains the ParlayLib benchmarks and related scripts for experimentation.
-* The `pbbs` directory contains the [PBBS](https://github.com/cmuparlay/pbbsbench) benchmarks and related scripts for experimentation.
-* 3 branches with the following objectives:
-    * `master` branch: Contains the `EvaluationVertex`, measuring work, span, and the number of forks. This branch can be used to reproduce the results of the evaluation section (section 6) of the paper.
-    * `grain-analysis` branch: Contains the `GrainAnalysisVertex` used to perform granularity analysis. This branch can be used to reproduce the results of the granularity analysis section and the parallel range query case study (sections 3 and 3.1) of the paper.
-    * `space-profiling` branch: Contains the `SpaceVertex` used to perform space profiling. This branch can be used to reproduce the results of the space profiling section and the quickhull case study (sections 4 and 4.1) of the paper.
-* Each branch's README contains the necessary details to reproduce the results 
+# Branches
 
-# How to Run
+* [`master`](../../tree/master): the `EvaluationVertex`, measuring work, span, and the number of forks. Reproduces the results of the evaluation section (section 6) of the paper.
+* [`grain-analysis`](../../tree/grain-analysis): the `GrainAnalysisVertex` used to perform granularity analysis. Reproduces the granularity analysis section and the parallel range query case study (sections 3 and 3.1) of the paper.
+* [`space-profiling`](../../tree/space-profiling): the `SpaceVertex` used to perform space profiling. Reproduces the space profiling section and the quickhull case study (sections 4 and 4.1) of the paper.
+* [`graph-viz`](../../tree/graph-viz) (this branch): the graph-tracing Vertex plus the `visualize` tool, for interactive computation graph visualization.
 
-1. **Clone the repository**
-   
-2. **Install the required Python modules**
-   ```bash
-   pip3 install -r requirements.txt
-   ```
+# How It Works
 
-3. **Retrieve the submodules**
-   ```bash
-   git submodule update --init --recursive
-   ```
+* [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h): the custom Vertex. Each vertex carries a deterministic [DePa label](https://arxiv.org/abs/2204.14168) (implemented here: [`include/parlay/internal/depa.h`](include/parlay/internal/depa.h)) identifying its position in the fork-join graph.
+* [`visualize`](visualize): reconstructs the series-parallel graph from the trace and writes a self-contained interactive HTML page.
 
-4. **Run and generate the results for the ParlayLib benchmarks**
-   ```bash
-   cd scheduler-augmentation/eval/benchmarks
-   make gen_graphs
-   ```
-   * `scheduler-augmentation/eval/benchmarks/result` directory will contain the generated raw result files.
-   * `scheduler-augmentation/eval/benchmarks/summary_plots` directory will contain the generated plots and tables:
-     * `overhead_plot.png`: The overhead plot.
-     * `speedup_subplots.png`: Contains the generated speedup subplots.
-     * `parlay_table_1_40_80.txt`: The table with results for $P = 1, 40, 80$.
-     * `parlay_table_all.txt`: The table with results for all processor counts (i.e., $P = 1, 10, 20, 30, 40, 50, 60, 70, 80$).
+# Example: Mergesort
 
-5. **Run and generate the results for the PBBS benchmarks**
-   ```bash
-   cd scheduler-augmentation/pbbs/scripts
-   nohup ./main_script.sh &
-   ```
-   * `scheduler-augmentation/pbbs/result` directory will contain the generated results, tables, and the plot:
-     * `run_unaug.out` and `run_aug.out`: Logs from the unaugmented and augmented benchmark executions.
-     * `unaug.json` and `aug.json`: Processor-wise raw timing results for each benchmark.
-     * `pbbs_table_1_40_80.txt`: The table with PBBS results for $P = 1, 40, 80$.
-     * `pbbs_table_all.txt`: The table with PBBS results for all processor counts (i.e., $P = 1, 10, 20, 30, 40, 50, 60, 70, 80$).
-     * `combined_table_all.txt`: The concatenated results table featuring both ParlayLib and PBBS benchmarks.
-     * `overhead_plot.pdf`: The complete evaluation overhead plot (formatted exactly like Figure 12 in the paper).
+```bash
+cd eval/benchmarks
+make bin/mergesort.aug
+PARLAY_NUM_THREADS=4 ./bin/mergesort.aug 10000000   # writes parlay.trace
+../../visualize parlay.trace                        # opens in your web browser
+```
 
-> [!NOTE]  
-> In order to correctly generate `combined_table_all.txt` and the final `overhead_plot.pdf` (Figure 12), you **must** generate the ParlayLib benchmark results *before* running the PBBS benchmark scripts.
+In the viewer: drag to pan, scroll to zoom (more detail appears as you zoom in),
+hover any element for its work, fork count, and average work per fork, use the
+*height* slider to stretch the layout vertically, and press *play* (or space) to
+replay the execution — 10× slower than real time by default, adjustable with the
+speed slider.
+
+Environment variables understood by any `.aug` binary:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PARLAY_NUM_THREADS` | all cores | number of worker threads |
+| `PARLAY_TRACE_FILE` | `parlay.trace` | where to write the trace |
+| `PARLAY_TRACE_CUTOFF_US` | `500` | join-points with less work than this (in µs) are omitted |
+
+The same workflow applies to the other benchmarks in `eval/benchmarks` (build the
+`bin/<name>.aug` target).
