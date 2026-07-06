@@ -1,5 +1,7 @@
 # Scheduler Augmentation: Computation Graph Visualization
 
+![Example visualization](./example.gif)
+
 This is an application of *scheduler augmentation*, described in the following paper:
 > *Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs.*
 > Sam Westrick, Darshan Dinesh Kumar and Seong-Heon Jung.
