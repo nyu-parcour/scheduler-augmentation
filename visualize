@@ -302,6 +302,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       --border: rgba(255,255,255,0.10);
     }
   }
+  /* explicit theme override (theme toggle button); wins over the media query */
+  :root[data-theme="light"] {
+    --surface: #fcfcfb;
+    --page: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+  }
+  :root[data-theme="dark"] {
+    --surface: #1a1a19;
+    --page: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --hairline: #2c2c2a;
+    --border: rgba(255,255,255,0.10);
+  }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
   body {
@@ -341,6 +360,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #scrub { flex: 1; accent-color: #2a78d6; }
   #speed { width: 110px; accent-color: #2a78d6; }
   #yscale { width: 90px; accent-color: #2a78d6; vertical-align: middle; }
+  #ewidth { width: 90px; accent-color: #2a78d6; vertical-align: middle; }
   .yscale-label { color: var(--muted); font-size: 12px; }
   #clock { font-variant-numeric: tabular-nums; color: var(--ink-2); white-space: nowrap; }
   #clock b { color: var(--ink); font-weight: 600; }
@@ -368,8 +388,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <h1>Fork-join graph <span class="file">__TITLE__</span></h1>
   <label>round <select id="round"></select></label>
   <button id="fit">fit</button>
+  <button id="themeBtn" title="color theme: follow system / light / dark"></button>
   <label class="yscale-label" title="lengthen/shorten boxes vertically">
     height <input id="yscale" type="range" min="-2" max="2.585" step="0.01" value="0">
+  </label>
+  <label class="yscale-label" title="thicken/thin the fork-join edges">
+    edges <input id="ewidth" type="range" min="-2" max="2" step="0.01" value="0">
   </label>
   <span id="stats"></span>
   <span class="legend">
@@ -399,11 +423,15 @@ const DATA = __DATA__;
 const RAMP = ["#cde2fb","#b7d3f6","#9ec5f4","#86b6ef","#6da7ec","#5598e7",
               "#3987e5","#2a78d6","#256abf","#1c5cab","#184f95","#104281","#0d366b"];
 const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+let themeMode = "auto";  // "auto" (follow system) | "light" | "dark"
+function effectiveDark() {
+  return themeMode === "dark" || (themeMode === "auto" && darkQuery.matches);
+}
 let theme = {};
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
   theme = {
-    dark: darkQuery.matches,
+    dark: effectiveDark(),
     surface: cs.getPropertyValue("--surface").trim(),
     ink: cs.getPropertyValue("--ink").trim(),
     ink2: cs.getPropertyValue("--ink-2").trim(),
@@ -571,13 +599,15 @@ function drawNodeDot(cx, cy) {
   ctx.fill();
 }
 
+let edgeScale = 1;  // edge thickness slider: multiplies the zoom-adaptive width
+
 function drawEdge(x0, y0, x1, y1) {
   ctx.beginPath();
   ctx.moveTo(sx(x0), sy(y0));
   const my = (y0 + y1) / 2;
   ctx.bezierCurveTo(sx(x0), sy(my), sx(x1), sy(my), sx(x1), sy(y1));
   ctx.strokeStyle = theme.muted;
-  ctx.lineWidth = Math.max(0.75, Math.min(2, 1.2 * Math.sqrt(view.k)));
+  ctx.lineWidth = Math.max(0.75, Math.min(2, 1.2 * Math.sqrt(view.k))) * edgeScale;
   ctx.stroke();
 }
 
@@ -763,6 +793,11 @@ function fit() {
 }
 document.getElementById("fit").addEventListener("click", fit);
 
+document.getElementById("ewidth").addEventListener("input", e => {
+  edgeScale = Math.pow(2, +e.target.value);
+  draw();
+});
+
 document.getElementById("yscale").addEventListener("input", e => {
   const oldH = round ? round.tree._h : 1;
   yScale = Math.pow(2, +e.target.value);
@@ -899,6 +934,21 @@ function applyTheme() {
   draw();
 }
 darkQuery.addEventListener("change", applyTheme);
+
+// theme toggle: follow system -> light -> dark -> follow system
+const themeBtn = document.getElementById("themeBtn");
+const THEME_LABELS = { auto: "◑ auto", light: "☀︎ light", dark: "☾ dark" };
+function setThemeMode(m) {
+  themeMode = m;
+  if (m === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", m);
+  themeBtn.textContent = THEME_LABELS[m];
+  applyTheme();
+}
+themeBtn.addEventListener("click", () => {
+  setThemeMode(themeMode === "auto" ? "light" : themeMode === "light" ? "dark" : "auto");
+});
+setThemeMode("auto");
 
 readTheme();
 makeHatch();
