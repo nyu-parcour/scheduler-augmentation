@@ -17,8 +17,13 @@
 //   void stop();                  // pause accounting on this strand
 //   void fork(V* left, V* right); // called on the parent at a fork point;
 //                                 // left/right are freshly default-constructed
-//   void join(V* left, V* right); // fold the finished children into *this;
-//                                 // the scheduler calls start() afterwards
+//   void join(V* left, V* right, V* join_v);
+//                                 // called on the parent at a join point: fold
+//                                 // *this and the finished children into
+//                                 // join_v (freshly default-constructed). The
+//                                 // scheduler then calls join_v->start() and
+//                                 // move-assigns join_v into the parent, which
+//                                 // becomes the vertex of the continuing strand.
 //
 // The scheduler tracks the vertex of the currently-executing strand in
 // current_vertex<V>::ptr, so vertex types do not declare any statics.
@@ -40,7 +45,7 @@ struct noop_vertex {
   void start() {}
   void stop() {}
   void fork(noop_vertex*, noop_vertex*) {}
-  void join(noop_vertex*, noop_vertex*) {}
+  void join(noop_vertex*, noop_vertex*, noop_vertex*) {}
 };
 
 // Per-vertex-type thread-local pointer to the vertex of the strand that

@@ -507,8 +507,10 @@ class fork_join_scheduler {
     }
 
     if constexpr (Hooked) {
-      parent_v->join(&left_v, &right_v);
-      parent_v->start();
+      V join_v;
+      parent_v->join(&left_v, &right_v, &join_v);
+      join_v.start();
+      *parent_v = std::move(join_v);
       current_vertex<V>::ptr = parent_v;
     }
   }

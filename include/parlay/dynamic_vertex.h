@@ -40,8 +40,9 @@ struct vertex_ops {
   // Placement-constructs fresh children into left_buf/right_buf, then calls
   // parent->fork(left, right).
   void (*fork)(void* parent, void* left_buf, void* right_buf);
-  // Calls parent->join(left, right), then destroys left and right.
-  void (*join)(void* parent, void* left, void* right);
+  // Placement-constructs a fresh join vertex into join_buf, calls
+  // parent->join(left, right, join), then destroys left and right.
+  void (*join)(void* parent, void* left, void* right, void* join_buf);
   void (*move_construct)(void* dst, void* src);
   void (*destroy)(void*);
 };
@@ -55,10 +56,11 @@ inline constexpr vertex_ops vertex_ops_for = {
       V* rp = ::new (r) V();
       static_cast<V*>(p)->fork(lp, rp);
     },
-    [](void* p, void* l, void* r) {
+    [](void* p, void* l, void* r, void* j) {
+      V* jp = ::new (j) V();
       V* lp = static_cast<V*>(l);
       V* rp = static_cast<V*>(r);
-      static_cast<V*>(p)->join(lp, rp);
+      static_cast<V*>(p)->join(lp, rp, jp);
       lp->~V();
       rp->~V();
     },
@@ -131,8 +133,10 @@ class alignas(64) dynamic_vertex {
     if (ops) ops->fork(payload, left->payload, right->payload);
   }
 
-  void join(dynamic_vertex* left, dynamic_vertex* right) {
-    if (ops) ops->join(payload, left->payload, right->payload);
+  void join(dynamic_vertex* left, dynamic_vertex* right, dynamic_vertex* join_v) {
+    // The join vertex inherits the region's concrete vertex type.
+    join_v->ops = ops;
+    if (ops) ops->join(payload, left->payload, right->payload, join_v->payload);
     // The join op already destroyed the children's payloads.
     left->ops = nullptr;
     right->ops = nullptr;

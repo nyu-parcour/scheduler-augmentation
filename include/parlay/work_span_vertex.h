@@ -48,10 +48,10 @@ class work_span_vertex {
     no_forks++;
   }
 
-  void join(work_span_vertex* left, work_span_vertex* right) {
-    no_forks += left->no_forks + right->no_forks;
-    work += left->work + right->work;
-    span += (left->span >= right->span) ? left->span : right->span;
+  void join(work_span_vertex* left, work_span_vertex* right, work_span_vertex* join_v) {
+    join_v->no_forks = no_forks + left->no_forks + right->no_forks;
+    join_v->work = work + left->work + right->work;
+    join_v->span = span + ((left->span >= right->span) ? left->span : right->span);
   }
 
   void log(unsigned int num_threads) {
