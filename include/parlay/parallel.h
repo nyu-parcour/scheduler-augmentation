@@ -144,9 +144,28 @@ static void par_do3_if(bool do_parallel, Lf&& left, Mf&& mid, Rf&& right) {
 
 #include "internal/work_stealing_job.h"
 
+// The vertex type used by the global scheduler (see vertex.h). Selected at
+// compile time; every translation unit of a program must agree on the
+// selection (as with PARLAY_ELASTIC_PARALLELISM).
+//
+//  - Default: parlay::dynamic_vertex. Augmentation is available at runtime
+//    for any vertex type via parlay::augment(initial_vertex, f); the only
+//    cost outside augmented regions is one branch per fork.
+//  - Define PARLAY_NOOP_VERTEX for a scheduler with all augmentation
+//    machinery compiled out (identical to stock parlay).
+//  - Define PARLAY_VERTEX_TYPE to a concrete vertex type to compile the
+//    hooks in statically with no type erasure; parlay::augment then only
+//    accepts that vertex type.
+#if defined(PARLAY_NOOP_VERTEX) && !defined(PARLAY_VERTEX_TYPE)
+#define PARLAY_VERTEX_TYPE ::parlay::noop_vertex
+#endif
+
+#ifndef PARLAY_VERTEX_TYPE
+#define PARLAY_VERTEX_TYPE ::parlay::dynamic_vertex
+#endif
 
 namespace parlay {
-  
+
 namespace internal {
 
 #ifdef _MSC_VER
@@ -167,7 +186,9 @@ inline unsigned int init_num_workers() {
 #pragma warning(pop)
 #endif
 
-using scheduler_type = scheduler<WorkStealingJob>;
+using scheduler_vertex_type = PARLAY_VERTEX_TYPE;
+using job_type = WorkStealingJob<scheduler_vertex_type>;
+using scheduler_type = scheduler<job_type>;
 
 extern inline scheduler_type& get_current_scheduler() {
   auto current_scheduler = scheduler_type::get_current_scheduler();
@@ -179,6 +200,12 @@ extern inline scheduler_type& get_current_scheduler() {
 }
 
 }  // namespace internal
+
+// True if the global scheduler's vertex hooks are compiled in, i.e.,
+// parlay::augment actually observes the computation. Useful for
+// if constexpr-guarding vertex reporting in client code that is compiled
+// both with and without augmentation.
+inline constexpr bool augmentation_enabled = internal::scheduler_vertex_type::enabled;
 
 inline size_t num_workers() {
   return internal::get_current_scheduler().num_workers();
@@ -211,9 +238,19 @@ inline void par_do(Lf&& left, Rf&& right, bool conservative) {
   return fork_join_scheduler::pardo(internal::get_current_scheduler(), std::forward<Lf>(left), std::forward<Rf>(right), conservative);
 }
 
-template <typename F>
-inline auto augment(F&& f) {
-  return fork_join_scheduler::augment(internal::get_current_scheduler(), std::forward<F>(f));
+// Run f() with the given initial vertex installed as the root of an
+// augmented region, and return the resulting vertex (see vertex.h).
+//
+//   auto v = parlay::augment(parlay::work_span_vertex{}, [&]() { ... });
+//
+// Under the default (dynamic_vertex) scheduler this works for any vertex
+// type; under a noop_vertex scheduler it simply runs f and returns the
+// initial vertex unchanged.
+template <typename V, typename F>
+inline V augment(V initial, F&& f) {
+  static_assert(std::is_invocable_v<F&&>);
+  return fork_join_scheduler::augment(internal::get_current_scheduler(),
+                                      std::move(initial), std::forward<F>(f));
 }
 
 // Execute the given function f() on p threads inside its own private scheduler instance

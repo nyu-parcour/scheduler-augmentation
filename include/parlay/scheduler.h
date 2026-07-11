@@ -18,12 +18,11 @@
 #include <vector>
 #include <functional>
 
+#include "vertex.h"
+#include "dynamic_vertex.h"
+
 #include "internal/work_stealing_deque.h"         // IWYU pragma: keep
 #include "internal/work_stealing_job.h"
-
-#ifdef PARLAY_AUG
-#include "internal/vertex.h"
-#endif
 
 // IWYU pragma: no_include <bits/chrono.h>
 // IWYU pragma: no_include <bits/this_thread_sleep.h>
@@ -60,9 +59,7 @@ template <typename Job>
 struct scheduler {
 
   using worker_id_type = unsigned int;
-#ifdef PARLAY_AUG
-  using Vertex = internal::vertex::Vertex;
-#endif
+  using vertex_type = typename Job::vertex_type;
 
  private:
   // static_assert(std::is_invocable_r_v<void, Job&>);
@@ -106,11 +103,6 @@ struct scheduler {
 
   const worker_id_type num_threads;
 
-  #ifdef PARLAY_AUG
-    std::shared_ptr<spdlog::logger> logger;
-  #endif
-
-
   // If the current thread is a worker of an existing scheduler, or the thread that spawned
   // a scheduler, return the most recent such scheduler.  Otherwise, returns null.
   static scheduler* get_current_scheduler() {
@@ -127,10 +119,6 @@ struct scheduler {
         spawned_threads(),
         finished_flag(false) {
 
-    #ifdef PARLAY_AUG
-        logger = spdlog::basic_logger_mt("vertex_logger", "logs_vertex.txt");
-    #endif
-
     // Spawn num_threads many threads on startup
     for (worker_id_type i = 1; i < num_threads; ++i) {
       spawned_threads.emplace_back([&, i]() {
@@ -138,10 +126,6 @@ struct scheduler {
         worker();
       });
     }
-#ifdef PARLAY_AUG
-    Vertex::current = new Vertex();
-    Vertex::current->start();
-#endif
   }
 
   ~scheduler() {
@@ -217,15 +201,15 @@ struct scheduler {
 #if PARLAY_ELASTIC_PARALLELISM
     wait_for_work();
 #endif
-#ifdef PARLAY_AUG
-    Vertex::current = nullptr;
-#endif
+    if constexpr (vertex_type::enabled) {
+      current_vertex<vertex_type>::ptr = nullptr;
+    }
     while (!finished()) {
-#ifdef PARLAY_AUG
-      assert(Vertex::current == nullptr);
-#endif
+      if constexpr (vertex_type::enabled) {
+        assert(current_vertex<vertex_type>::ptr == nullptr);
+      }
       Job* job = get_job([&]() { return finished(); }, PARLAY_ELASTIC_PARALLELISM);
-     
+
       if (job)(*job)();
 #if PARLAY_ELASTIC_PARALLELISM
       else if (!finished()) {
@@ -234,9 +218,9 @@ struct scheduler {
         wait_for_work();
       }
 #endif
-#ifdef PARLAY_AUG
-      Vertex::current = nullptr;
-#endif
+      if constexpr (vertex_type::enabled) {
+        current_vertex<vertex_type>::ptr = nullptr;
+      }
     }
     assert(finished());
     num_finished_workers.fetch_add(1);
@@ -251,21 +235,22 @@ struct scheduler {
   // on has completed.
   template <typename F>
   void do_work_until(F&& done) {
-#ifdef PARLAY_AUG
-    Vertex* orig_v = Vertex::current;
-    Vertex::current = nullptr;
-#endif
+    [[maybe_unused]] vertex_type* saved_vertex = nullptr;
+    if constexpr (vertex_type::enabled) {
+      saved_vertex = current_vertex<vertex_type>::ptr;
+      current_vertex<vertex_type>::ptr = nullptr;
+    }
     while (true) {
-#ifdef PARLAY_AUG
-      assert(Vertex::current == nullptr);
-#endif
       Job* job = get_job(done, false);  // timeout MUST BE false
 
-      if (!job) return;
+      if (!job) break;
       (*job)();
-#ifdef PARLAY_AUG
-      Vertex::current = nullptr;
-#endif
+      if constexpr (vertex_type::enabled) {
+        current_vertex<vertex_type>::ptr = nullptr;
+      }
+    }
+    if constexpr (vertex_type::enabled) {
+      current_vertex<vertex_type>::ptr = saved_vertex;
     }
     assert(done());
   }
@@ -283,7 +268,7 @@ struct scheduler {
     else job = steal_job(std::forward<F>(break_early), timeout);
     return job;
   }
-  
+
   // Find a job with random steals.
   //
   // Returns nullptr if break_early() returns true before a job
@@ -326,7 +311,7 @@ struct scheduler {
       parlay::atomic_notify_one(&wake_up_counter);
     }
   }
-  
+
   // Wake up all sleeping workers
   void wake_up_all_workers() {
     if (num_awake_workers.load(std::memory_order_acquire) < num_threads) {
@@ -334,7 +319,7 @@ struct scheduler {
       parlay::atomic_notify_all(&wake_up_counter);
     }
   }
-  
+
   // Wait until notified to wake up
   void wait_for_work() {
     auto orig_val = wake_up_counter.load();
@@ -351,11 +336,11 @@ struct scheduler {
         num_awake_workers.fetch_add(1);
         (*job)();
         return;
-      } 
+      }
     }
 
     parlay::atomic_wait(&wake_up_counter, orig_val);
-    num_awake_workers.fetch_add(1); 
+    num_awake_workers.fetch_add(1);
   }
 
 #endif
@@ -366,7 +351,7 @@ struct scheduler {
     x = x ^ (x >> 31);
     return static_cast<size_t>(x);
   }
-  
+
   void shutdown() {
     finished_flag.store(true, std::memory_order_release);
 #if PARLAY_ELASTIC_PARALLELISM
@@ -381,108 +366,153 @@ struct scheduler {
     for (worker_id_type i = 1; i < num_threads; ++i) {
       spawned_threads[i - 1].join();
     }
-#ifdef PARLAY_AUG
-    delete Vertex::current;
-#endif
   }
 };
 
 
 class fork_join_scheduler {
-  using Job = WorkStealingJob;
-  using scheduler_t = scheduler<Job>;
-#ifdef PARLAY_AUG
-  using Vertex = internal::vertex::Vertex;
-#endif
 
  public:
 
   // Fork two thunks and wait until they both finish.
-  template <typename L, typename R>
-  static void pardo(scheduler_t& scheduler, L&& left, R&& right, bool conservative = false) {
-#ifdef PARLAY_AUG
-    Vertex* parent_v = Vertex::current;
-    parent_v->stop();
-
-    Vertex right_v;
-    Vertex left_v;
-    parent_v->fork(&left_v, &right_v);
-#endif
-
-    auto execute_right = [&]() { std::forward<R>(right)(); };
-#ifdef PARLAY_AUG
-    auto right_job = make_job(right, &right_v);
-#else
-    auto right_job = make_job(right);
-#endif
-    scheduler.spawn(&right_job);
-
-#ifdef PARLAY_AUG
-    Vertex::current = &left_v;
-    left_v.start();
-    std::forward<L>(left)();
-    left_v.stop();
-#else
-    std::forward<L>(left)();
-#endif
-    
-    if (const Job* job = scheduler.get_own_job(); job != nullptr) {
-      assert(job == &right_job);
-#ifdef PARLAY_AUG
-      Vertex::current = &right_v;
-      right_v.start();
-      execute_right();
-      right_v.stop();
-#else
-      execute_right();
-#endif
+  template <typename Job, typename L, typename R>
+  static void pardo(scheduler<Job>& sched, L&& left, R&& right, bool conservative = false) {
+    using V = typename Job::vertex_type;
+    if constexpr (V::enabled) {
+      // Fast path: outside any augmented region, this single branch is the
+      // entire cost of augmentation support.
+      V* parent_v = current_vertex<V>::ptr;
+      if (parent_v != nullptr) {
+        return pardo_impl<true>(sched, std::forward<L>(left), std::forward<R>(right),
+                                conservative, parent_v);
+      }
     }
-    else {
-      auto done = [&]() { return right_job.finished(); };
-      scheduler.wait_until(done, conservative);
-      assert(right_job.finished());
-    }
-
-#ifdef PARLAY_AUG
-    Vertex join_v;
-    parent_v->join(&left_v, &right_v, &join_v);
-    join_v.start();
-    *parent_v = std::move(join_v);
-    Vertex::current = parent_v;
-#endif
+    return pardo_impl<false>(sched, std::forward<L>(left), std::forward<R>(right),
+                             conservative, static_cast<typename Job::vertex_type*>(nullptr));
   }
 
-  template <typename F>
-  static void parfor(scheduler_t& scheduler, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
+  template <typename Job, typename F>
+  static void parfor(scheduler<Job>& sched, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
     if (end <= start) return;
     if (granularity == 0) {
       size_t done = get_granularity(start, end, f);
-      granularity = std::max(done, (end - start) / static_cast<size_t>(128 * scheduler.num_threads));
+      granularity = std::max(done, (end - start) / static_cast<size_t>(128 * sched.num_threads));
       start += done;
     }
-    parfor_(scheduler, start, end, f, granularity, conservative);
+    parfor_(sched, start, end, f, granularity, conservative);
   }
 
-  template <typename F>
-  static auto augment(scheduler_t& scheduler, F&& f) {
-#ifdef PARLAY_AUG
-    Vertex* curr_v = Vertex::current;
-    new (curr_v) Vertex();
-    curr_v->start();
-#endif
-    auto start_ts = std::chrono::high_resolution_clock::now();
-    { std::forward<F>(f)(); }
-    auto stop_ts = std::chrono::high_resolution_clock::now();
-    auto elapsed_wc = (std::chrono::duration_cast<std::chrono::nanoseconds>(stop_ts - start_ts)).count();
-#ifdef PARLAY_AUG
-    curr_v->log(scheduler.logger, scheduler.num_threads);
-    return std::make_pair(*curr_v, elapsed_wc);
-#else
-    return std::make_pair(nullptr, elapsed_wc);
-#endif
+  // Run f() with the given initial vertex installed as the root of an
+  // augmented region: the scheduler's vertex hooks observe the parallel
+  // computation performed by f, and the resulting vertex is returned.
+  //
+  // The vertex type V must be the scheduler's vertex type, or, if the
+  // scheduler uses dynamic_vertex (the default), any vertex type at all.
+  // If the scheduler's vertex type is disabled (noop_vertex), f is simply
+  // run and the initial vertex is returned unchanged.
+  //
+  // If augment is called while an augmented region is already active, the
+  // outer region's vertex is paused for the duration of the inner region.
+  template <typename V, typename Job, typename F>
+  static V augment(scheduler<Job>& sched, V initial, F&& f) {
+    using SV = typename Job::vertex_type;
+    (void)sched;
+    if constexpr (!SV::enabled) {
+      std::forward<F>(f)();
+      return initial;
+    } else if constexpr (std::is_same_v<SV, V>) {
+      // The vertex type matches the scheduler's exactly: hooks are fully
+      // inlined with no type erasure.
+      V root = std::move(initial);
+      {
+        vertex_region_guard<SV> guard(&root);
+        root.start();
+        std::forward<F>(f)();
+        root.stop();
+      }
+      return root;
+    } else if constexpr (std::is_same_v<SV, dynamic_vertex>) {
+      dynamic_vertex root(std::move(initial));
+      {
+        vertex_region_guard<SV> guard(&root);
+        root.start();
+        std::forward<F>(f)();
+        root.stop();
+      }
+      return root.template take<V>();
+    } else {
+      static_assert(std::is_same_v<SV, dynamic_vertex>,
+        "parlay::augment: the vertex type must match the scheduler's vertex type, "
+        "or the scheduler must use parlay::dynamic_vertex (the default)");
+    }
   }
 
  private:
+
+  // Installs root as the current vertex for the guard's lifetime, pausing
+  // and restoring any enclosing region's vertex.
+  template <typename SV>
+  struct vertex_region_guard {
+    SV* outer;
+    explicit vertex_region_guard(SV* root) : outer(current_vertex<SV>::ptr) {
+      if (outer) outer->stop();
+      current_vertex<SV>::ptr = root;
+    }
+    ~vertex_region_guard() {
+      current_vertex<SV>::ptr = outer;
+      if (outer) outer->start();
+    }
+  };
+
+  // The body of pardo. The Hooked=false instantiation is the plain
+  // unaugmented fork-join; Hooked=true additionally maintains the vertices
+  // of the parent and child strands.
+  template <bool Hooked, typename Job, typename L, typename R>
+  static void pardo_impl(scheduler<Job>& sched, L&& left, R&& right, bool conservative,
+                         [[maybe_unused]] typename Job::vertex_type* parent_v) {
+    using V = typename Job::vertex_type;
+    [[maybe_unused]] V left_v, right_v;
+    if constexpr (Hooked) {
+      parent_v->stop();
+      parent_v->fork(&left_v, &right_v);
+    }
+
+    auto right_job = make_job(right, Hooked ? &right_v : nullptr);
+    sched.spawn(&right_job);
+
+    if constexpr (Hooked) {
+      current_vertex<V>::ptr = &left_v;
+      left_v.start();
+    }
+    std::forward<L>(left)();
+    if constexpr (Hooked) {
+      left_v.stop();
+    }
+
+    if (const Job* job = sched.get_own_job(); job != nullptr) {
+      assert(job == &right_job);
+      if constexpr (Hooked) {
+        current_vertex<V>::ptr = &right_v;
+        right_v.start();
+      }
+      std::forward<R>(right)();
+      if constexpr (Hooked) {
+        right_v.stop();
+      }
+    }
+    else {
+      auto done = [&]() { return right_job.finished(); };
+      sched.wait_until(done, conservative);
+      assert(right_job.finished());
+    }
+
+    if constexpr (Hooked) {
+      parent_v->join(&left_v, &right_v);
+      parent_v->start();
+      current_vertex<V>::ptr = parent_v;
+    }
+  }
+
   template <typename F>
   static size_t get_granularity(size_t start, size_t end, F& f) {
     size_t done = 0;
@@ -501,17 +531,17 @@ class fork_join_scheduler {
     return done;
   }
 
-  template <typename F>
-  static void parfor_(scheduler_t& scheduler, size_t start, size_t end, F& f, size_t granularity, bool conservative) {
+  template <typename Job, typename F>
+  static void parfor_(scheduler<Job>& sched, size_t start, size_t end, F& f, size_t granularity, bool conservative) {
     if ((end - start) <= granularity)
       for (size_t i = start; i < end; i++) f(i);
     else {
       size_t n = end - start;
       // Not in middle to avoid clashes on set-associative caches on powers of 2.
       size_t mid = (start + (9 * (n + 1)) / 16);
-      pardo(scheduler,
-            [&]() { parfor_(scheduler, start, mid, f, granularity, conservative); },
-            [&]() { parfor_(scheduler, mid, end, f, granularity, conservative); },
+      pardo(sched,
+            [&]() { parfor_(sched, start, mid, f, granularity, conservative); },
+            [&]() { parfor_(sched, mid, end, f, granularity, conservative); },
             conservative);
     }
   }
