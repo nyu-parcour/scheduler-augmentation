@@ -85,34 +85,34 @@ $(INPUT_DIR)/longtext.txt: | $(INPUT_DIR)
 
 # Rules for standard binaries
 $(BIN_GRAPH): | $(BIN_DIR)
-	$(CC) $(CFLAGS) graph/$(notdir $@)/$(notdir $@).cpp -o $@
+	$(CC) $(CFLAGS) -DPARLAY_NOOP_VERTEX graph/$(notdir $@)/$(notdir $@).cpp -o $@
 
 $(BIN_GEOMETRY): | $(BIN_DIR)
-	$(CC) $(CFLAGS) geometry/$(notdir $@)/$(notdir $@).cpp -o $@
+	$(CC) $(CFLAGS) -DPARLAY_NOOP_VERTEX geometry/$(notdir $@)/$(notdir $@).cpp -o $@
 
 $(BIN_STRING): $(INPUT_DIR)/longtext.txt | $(BIN_DIR)
-	$(CC) $(CFLAGS) string/$(notdir $@)/$(notdir $@).cpp -o $@
+	$(CC) $(CFLAGS) -DPARLAY_NOOP_VERTEX string/$(notdir $@)/$(notdir $@).cpp -o $@
 
 $(BIN_SORTING): | $(BIN_DIR)
-	$(CC) $(CFLAGS) sorting/$(notdir $@)/$(notdir $@).cpp -o $@
+	$(CC) $(CFLAGS) -DPARLAY_NOOP_VERTEX sorting/$(notdir $@)/$(notdir $@).cpp -o $@
 
 $(BIN_NUMERICAL): | $(BIN_DIR)
-	$(CC) $(CFLAGS) numerical/$(notdir $@)/$(notdir $@).cpp -o $@
+	$(CC) $(CFLAGS) -DPARLAY_NOOP_VERTEX numerical/$(notdir $@)/$(notdir $@).cpp -o $@
 
 $(BIN_GRAPH_AUG): | $(BIN_DIR)
-	$(CC) $(CFLAGS) -DPARLAY_AUG graph/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
+	$(CC) $(CFLAGS) graph/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
 
 $(BIN_GEOMETRY_AUG): | $(BIN_DIR)
-	$(CC) $(CFLAGS) -DPARLAY_AUG geometry/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
+	$(CC) $(CFLAGS) geometry/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
 
 $(BIN_STRING_AUG): | $(BIN_DIR)
-	$(CC) $(CFLAGS) -DPARLAY_AUG string/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
+	$(CC) $(CFLAGS) string/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
 
 $(BIN_SORTING_AUG): | $(BIN_DIR)
-	$(CC) $(CFLAGS) -DPARLAY_AUG sorting/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
+	$(CC) $(CFLAGS) sorting/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
 
 $(BIN_NUMERICAL_AUG): | $(BIN_DIR)
-	$(CC) $(CFLAGS) -DPARLAY_AUG numerical/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
+	$(CC) $(CFLAGS) numerical/$(basename $(notdir $@))/$(basename $(notdir $@)).cpp -o $@
 
 $(RESULT_DIR)/%: $(BIN_DIR)/% FORCE | $(RESULT_DIR)
 	$(eval TMP_OUT := $(strip $(OUTFILE)).tmp)

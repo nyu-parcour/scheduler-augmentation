@@ -1,5 +1,7 @@
 #include "../parlay/internal/get_time.h"
 #include "../parlay/parallel.h"
+#include "../parlay/work_span_vertex.h"
+#include <chrono>
 #include <fstream>
 
 template<class F, class G, class H>
@@ -10,16 +12,19 @@ void time_loop(int rounds, double delay, F initf, G runf, H endf) {
   // will skip if delay is zero
   while (t.total_time() < delay) {
     initf(); runf(); endf();
-  } 
-  
+  }
+
   double avg_elapsed_time = 0.0;
   for (int i=0; i < rounds; i++) {
     initf();
     t.start();
-    auto ret = parlay::augment([&]() {
+    auto start_ts = std::chrono::high_resolution_clock::now();
+    auto v = parlay::augment(parlay::work_span_vertex{}, [&]() {
       runf();
     });
-    avg_elapsed_time += ret.second;
+    auto stop_ts = std::chrono::high_resolution_clock::now();
+    avg_elapsed_time += std::chrono::duration_cast<std::chrono::nanoseconds>(stop_ts - start_ts).count();
+    if constexpr (parlay::augmentation_enabled) v.log(parlay::num_workers());
     t.next("");
     endf();
   }

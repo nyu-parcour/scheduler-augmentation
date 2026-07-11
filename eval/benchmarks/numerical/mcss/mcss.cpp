@@ -7,6 +7,8 @@
 #include <parlay/random.h>
 
 #include "mcss.h"
+#include <chrono>
+#include <parlay/work_span_vertex.h>
 
 // **************************************************************
 // Driver code
@@ -43,10 +45,13 @@ int main(int argc, char* argv[]) {
     int num_iters = 20;
     double avg_elapsed_time = 0.0;
     for (int i = 0; i < num_iters; i++) {
-      auto ret = parlay::augment([&]() {
+      auto start_ts = std::chrono::high_resolution_clock::now();
+      auto v = parlay::augment(parlay::work_span_vertex{}, [&]() {
         result = mcss(vals);
       });
-      avg_elapsed_time += ret.second;
+      auto stop_ts = std::chrono::high_resolution_clock::now();
+      avg_elapsed_time += std::chrono::duration_cast<std::chrono::nanoseconds>(stop_ts - start_ts).count();
+      if constexpr (parlay::augmentation_enabled) v.log(parlay::num_workers());
     }
     avg_elapsed_time /= num_iters;
     std::cout << std::fixed << std::setprecision(2) << avg_elapsed_time << "\n";

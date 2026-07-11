@@ -193,8 +193,9 @@ def getProcessors() :
 def compiletest(sdir) :
     dir = "benchmarks/" + sdir
     make_flags = ""
-    if run_aug:
-        make_flags = "CFLAGS='$(PBBFLAGS) $(CCFLAGS) -DPARLAY_AUG'"
+    if not run_aug:
+        # baseline: compile out all augmentation machinery
+        make_flags = "CFLAGS='$(PBBFLAGS) $(CCFLAGS) -DPARLAY_NOOP_VERTEX'"
     if (forceCompile) :
         ss = "cd " + dir + " ; make -s cleanall ; make " + make_flags
     else :
