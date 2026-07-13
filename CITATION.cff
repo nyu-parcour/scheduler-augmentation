@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Scheduler Augmentation"
+repository-code: "https://github.com/nyu-parcour/scheduler-augmentation"
+authors:
+  - family-names: "Westrick"
+    given-names: "Sam"
+    orcid: "https://orcid.org/0000-0003-2848-9808"
+  - family-names: "Kumar"
+    given-names: "Darshan Dinesh"
+    orcid: "https://orcid.org/0009-0005-9221-5870"
+  - family-names: "Jung"
+    given-names: "Seong-Heon"
+    orcid: "https://orcid.org/0009-0008-8850-3054"
+preferred-citation:
+  type: conference-paper
+  title: "Scheduler Augmentation: A Lightweight, Customizable, Low-Cost Profiling Technique for Fork-Join Parallel Programs"
+  authors:
+    - family-names: "Westrick"
+      given-names: "Sam"
+      orcid: "https://orcid.org/0000-0003-2848-9808"
+    - family-names: "Kumar"
+      given-names: "Darshan Dinesh"
+      orcid: "https://orcid.org/0009-0005-9221-5870"
+    - family-names: "Jung"
+      given-names: "Seong-Heon"
+      orcid: "https://orcid.org/0009-0008-8850-3054"
+  collection-title: "ACM Symposium on Parallelism in Algorithms and Architectures (SPAA)"
+  year: 2026
+  doi: "10.1145/3816782.3819212"
