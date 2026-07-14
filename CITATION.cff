@@ -2,6 +2,13 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "Scheduler Augmentation"
 repository-code: "https://github.com/nyu-parcour/scheduler-augmentation"
+keywords:
+  - "work-stealing"
+  - "scheduling"
+  - "fork-join"
+  - "parallelism"
+  - "lightweight libraries"
+  - "profiling"
 authors:
   - family-names: "Westrick"
     given-names: "Sam"
@@ -25,6 +32,26 @@ preferred-citation:
     - family-names: "Jung"
       given-names: "Seong-Heon"
       orcid: "https://orcid.org/0009-0008-8850-3054"
-  collection-title: "ACM Symposium on Parallelism in Algorithms and Architectures (SPAA)"
+  collection-title: "Proceedings of the 38th ACM Symposium on Parallelism in Algorithms and Architectures"
+  conference:
+    name: "38th ACM Symposium on Parallelism in Algorithms and Architectures"
+    location: "Royal Holloway, University of London, London, United Kingdom"
+  publisher:
+    name: "Association for Computing Machinery"
+    city: "New York"
+    region: "NY"
+    country: "US"
   year: 2026
   doi: "10.1145/3816782.3819212"
+  url: "https://doi.org/10.1145/3816782.3819212"
+  isbn: "9798400727610"
+  start: 457
+  end: 472
+  pages: 16
+  keywords:
+    - "work-stealing"
+    - "scheduling"
+    - "fork-join"
+    - "parallelism"
+    - "lightweight libraries"
+    - "profiling"
