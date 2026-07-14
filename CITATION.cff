@@ -34,7 +34,7 @@ preferred-citation:
       orcid: "https://orcid.org/0009-0008-8850-3054"
   collection-title: "Proceedings of the 38th ACM Symposium on Parallelism in Algorithms and Architectures"
   conference:
-    name: "38th ACM Symposium on Parallelism in Algorithms and Architectures"
+    name: "SPAA '26"
     location: "Royal Holloway, University of London, London, United Kingdom"
   publisher:
     name: "Association for Computing Machinery"
