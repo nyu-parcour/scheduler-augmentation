@@ -9,7 +9,8 @@ This repository contains the source code for the following paper
 > https://dl.acm.org/doi/10.1145/3816782.3819212
 
 This repository has 5 branches:
-  * [`master`](https://github.com/nyu-parcour/scheduler-augmentation/tree/master): implementation and performance evaluation from the paper
+  * [`spaa26`](https://github.com/nyu-parcour/scheduler-augmentation/tree/master): development branch
+  * [`spaa26`](https://github.com/nyu-parcour/scheduler-augmentation/tree/spaa26): implementation and performance evaluation from the paper
   * [`grain-analysis`](https://github.com/nyu-parcour/scheduler-augmentation/tree/grain-analysis): implementation of the granularity analysis technique from the paper
   * [`space-profiling`](https://github.com/nyu-parcour/scheduler-augmentation/tree/space-profiling): implementation of the space profiling technique from the paper
   * [`graph-viz`](https://github.com/nyu-parcour/scheduler-augmentation/tree/graph-viz): computation graph visualization, for example as shown above.
@@ -37,7 +38,7 @@ If you use Scheduler Augmentation, we would appreciate a citation:
 }
 ```
 
-# `master` Branch Details
+# `spaa26` Branch Details
 
 * It starts from a fork of [ParlayLib](https://github.com/cmuparlay/parlaylib).
 * The [`include/parlay/scheduler.h`](include/parlay/scheduler.h) file contains the changes implemented to extend ParlayLib's work-stealing scheduler with scheduler augmentation.
