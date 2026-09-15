@@ -9,7 +9,7 @@ This repository contains the source code for the following paper
 > https://dl.acm.org/doi/10.1145/3816782.3819212
 
 This repository has 5 branches:
-  * [`spaa26`](https://github.com/nyu-parcour/scheduler-augmentation/tree/master): development branch
+  * [`master`](https://github.com/nyu-parcour/scheduler-augmentation/tree/master): development branch
   * [`spaa26`](https://github.com/nyu-parcour/scheduler-augmentation/tree/spaa26): implementation and performance evaluation from the paper
   * [`grain-analysis`](https://github.com/nyu-parcour/scheduler-augmentation/tree/grain-analysis): implementation of the granularity analysis technique from the paper
   * [`space-profiling`](https://github.com/nyu-parcour/scheduler-augmentation/tree/space-profiling): implementation of the space profiling technique from the paper
