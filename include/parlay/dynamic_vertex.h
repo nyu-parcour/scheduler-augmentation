@@ -142,6 +142,20 @@ class alignas(64) dynamic_vertex {
     right->ops = nullptr;
   }
 
+  // The concrete vertex held by this handle, or nullptr if the handle is
+  // inert or holds a vertex of a type other than V.
+  template <typename V>
+  V* get() noexcept {
+    if (ops != &vertex_ops_for<V>) return nullptr;
+    return std::launder(reinterpret_cast<V*>(payload));
+  }
+
+  template <typename V>
+  const V* get() const noexcept {
+    if (ops != &vertex_ops_for<V>) return nullptr;
+    return std::launder(reinterpret_cast<const V*>(payload));
+  }
+
   // Extracts the concrete vertex, leaving this handle inert.
   // V must be the type this handle was constructed from.
   template <typename V>

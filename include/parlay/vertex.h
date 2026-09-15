@@ -25,8 +25,11 @@
 //                                 // move-assigns join_v into the parent, which
 //                                 // becomes the vertex of the continuing strand.
 //
-// The scheduler tracks the vertex of the currently-executing strand in
-// current_vertex<V>::ptr, so vertex types do not declare any statics.
+// The scheduler tracks the vertex of the currently-executing strand in a
+// thread-local slot (internal::current_vertex_slot<V>::ptr), so vertex types
+// do not declare any statics. Client code reads it with
+//   V* v = parlay::current_vertex<V>();
+// (see parallel.h), which is nullptr outside any region of vertex type V.
 //
 // A vertex is installed for the dynamic extent of a computation with
 //   V result = parlay::augment(V{initial}, [&]() { ... });
@@ -48,13 +51,17 @@ struct noop_vertex {
   void join(noop_vertex*, noop_vertex*, noop_vertex*) {}
 };
 
+namespace internal {
+
 // Per-vertex-type thread-local pointer to the vertex of the strand that
 // the current thread is executing (nullptr outside any augmented region).
 // Constant-initialized, so access needs no TLS init guard.
 template <typename V>
-struct current_vertex {
+struct current_vertex_slot {
   static inline thread_local V* ptr = nullptr;
 };
+
+}  // namespace internal
 
 }  // namespace parlay
 

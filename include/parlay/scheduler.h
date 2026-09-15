@@ -206,11 +206,11 @@ struct scheduler {
     wait_for_work();
 #endif
     if constexpr (vertex_type::enabled) {
-      current_vertex<vertex_type>::ptr = nullptr;
+      internal::current_vertex_slot<vertex_type>::ptr = nullptr;
     }
     while (!finished()) {
       if constexpr (vertex_type::enabled) {
-        assert(current_vertex<vertex_type>::ptr == nullptr);
+        assert(internal::current_vertex_slot<vertex_type>::ptr == nullptr);
       }
       job_type* job = get_job([&]() { return finished(); }, PARLAY_ELASTIC_PARALLELISM);
 
@@ -223,7 +223,7 @@ struct scheduler {
       }
 #endif
       if constexpr (vertex_type::enabled) {
-        current_vertex<vertex_type>::ptr = nullptr;
+        internal::current_vertex_slot<vertex_type>::ptr = nullptr;
       }
     }
     assert(finished());
@@ -241,8 +241,8 @@ struct scheduler {
   void do_work_until(F&& done) {
     [[maybe_unused]] vertex_type* saved_vertex = nullptr;
     if constexpr (vertex_type::enabled) {
-      saved_vertex = current_vertex<vertex_type>::ptr;
-      current_vertex<vertex_type>::ptr = nullptr;
+      saved_vertex = internal::current_vertex_slot<vertex_type>::ptr;
+      internal::current_vertex_slot<vertex_type>::ptr = nullptr;
     }
     while (true) {
       job_type* job = get_job(done, false);  // timeout MUST BE false
@@ -250,11 +250,11 @@ struct scheduler {
       if (!job) break;
       (*job)();
       if constexpr (vertex_type::enabled) {
-        current_vertex<vertex_type>::ptr = nullptr;
+        internal::current_vertex_slot<vertex_type>::ptr = nullptr;
       }
     }
     if constexpr (vertex_type::enabled) {
-      current_vertex<vertex_type>::ptr = saved_vertex;
+      internal::current_vertex_slot<vertex_type>::ptr = saved_vertex;
     }
     assert(done());
   }
@@ -384,7 +384,7 @@ class fork_join_scheduler {
     if constexpr (V::enabled) {
       // Fast path: outside any augmented region, this single branch is the
       // entire cost of augmentation support.
-      V* parent_v = current_vertex<V>::ptr;
+      V* parent_v = internal::current_vertex_slot<V>::ptr;
       if (parent_v != nullptr) {
         return pardo_impl<true>(sched, std::forward<L>(left), std::forward<R>(right),
                                 conservative, parent_v);
@@ -449,6 +449,28 @@ class fork_join_scheduler {
     }
   }
 
+  // The vertex of type V for the strand the calling thread is currently
+  // executing, or nullptr if the thread is not inside an augmented region
+  // whose vertex type is V. SV is the scheduler's vertex type: with a
+  // dynamic_vertex scheduler the handle is unwrapped and a region of a
+  // different concrete type yields nullptr; with a disabled scheduler the
+  // result is always nullptr.
+  template <typename V, typename SV>
+  static V* current_vertex() noexcept {
+    if constexpr (!SV::enabled) {
+      return nullptr;
+    } else if constexpr (std::is_same_v<SV, V>) {
+      return internal::current_vertex_slot<V>::ptr;
+    } else if constexpr (std::is_same_v<SV, dynamic_vertex>) {
+      dynamic_vertex* handle = internal::current_vertex_slot<dynamic_vertex>::ptr;
+      return handle ? handle->template get<V>() : nullptr;
+    } else {
+      static_assert(std::is_same_v<SV, dynamic_vertex>,
+        "parlay::current_vertex: the vertex type must match the scheduler's vertex type, "
+        "or the scheduler must use parlay::dynamic_vertex (the default)");
+    }
+  }
+
  private:
 
   // Installs root as the current vertex for the guard's lifetime, pausing
@@ -456,12 +478,12 @@ class fork_join_scheduler {
   template <typename SV>
   struct vertex_region_guard {
     SV* outer;
-    explicit vertex_region_guard(SV* root) : outer(current_vertex<SV>::ptr) {
+    explicit vertex_region_guard(SV* root) : outer(internal::current_vertex_slot<SV>::ptr) {
       if (outer) outer->stop();
-      current_vertex<SV>::ptr = root;
+      internal::current_vertex_slot<SV>::ptr = root;
     }
     ~vertex_region_guard() {
-      current_vertex<SV>::ptr = outer;
+      internal::current_vertex_slot<SV>::ptr = outer;
       if (outer) outer->start();
     }
   };
@@ -483,7 +505,7 @@ class fork_join_scheduler {
     sched.spawn(&right_job);
 
     if constexpr (Hooked) {
-      current_vertex<V>::ptr = &left_v;
+      internal::current_vertex_slot<V>::ptr = &left_v;
       left_v.start();
     }
     std::forward<L>(left)();
@@ -494,7 +516,7 @@ class fork_join_scheduler {
     if (const Job* job = sched.get_own_job(); job != nullptr) {
       assert(job == &right_job);
       if constexpr (Hooked) {
-        current_vertex<V>::ptr = &right_v;
+        internal::current_vertex_slot<V>::ptr = &right_v;
         right_v.start();
       }
       std::forward<R>(right)();
@@ -513,7 +535,7 @@ class fork_join_scheduler {
       parent_v->join(&left_v, &right_v, &join_v);
       join_v.start();
       *parent_v = std::move(join_v);
-      current_vertex<V>::ptr = parent_v;
+      internal::current_vertex_slot<V>::ptr = parent_v;
     }
   }
 

@@ -252,6 +252,20 @@ inline V augment(V initial, F&& f) {
                                       std::move(initial), std::forward<F>(f));
 }
 
+// The vertex of type V for the strand the calling thread is currently
+// executing, or nullptr if the thread is not inside an augmented region of
+// vertex type V (see vertex.h). Lets client code feed information into the
+// vertex from within the computation, e.g.
+//
+//   if (auto* v = parlay::current_vertex<phase_vertex>()) v->phase = 2;
+//
+// Under the default (dynamic_vertex) scheduler this works for any vertex
+// type; under a noop_vertex scheduler it is always nullptr.
+template <typename V>
+inline V* current_vertex() noexcept {
+  return fork_join_scheduler::current_vertex<V, internal::scheduler_vertex_type>();
+}
+
 // Execute the given function f() on p threads inside its own private scheduler instance
 //
 // The scheduler instance is destroyed upon completion and can not be re-used. Creating a

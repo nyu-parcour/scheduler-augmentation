@@ -47,7 +47,7 @@ struct WorkStealingJob : private internal::job_vertex_base<V> {
     if constexpr (V::enabled) {
       // job_vertex is null for jobs spawned outside any augmented region.
       V* v = this->job_vertex;
-      current_vertex<V>::ptr = v;
+      internal::current_vertex_slot<V>::ptr = v;
       if (v) v->start();
       execute();
       if (v) v->stop();
