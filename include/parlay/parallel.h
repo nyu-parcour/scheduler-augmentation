@@ -187,8 +187,7 @@ inline unsigned int init_num_workers() {
 #endif
 
 using scheduler_vertex_type = PARLAY_VERTEX_TYPE;
-using job_type = WorkStealingJob<scheduler_vertex_type>;
-using scheduler_type = scheduler<job_type>;
+using scheduler_type = scheduler<scheduler_vertex_type>;
 
 extern inline scheduler_type& get_current_scheduler() {
   auto current_scheduler = scheduler_type::get_current_scheduler();

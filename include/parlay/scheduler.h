@@ -55,14 +55,18 @@
 #endif
 
 namespace parlay {
-template <typename Job>
+
+// A work-stealing scheduler parameterized by the vertex type V that
+// observes the fork-join structure of the computation (see vertex.h).
+// Jobs carry a pointer to the vertex of the strand they execute.
+template <typename V>
 struct scheduler {
 
   using worker_id_type = unsigned int;
-  using vertex_type = typename Job::vertex_type;
+  using vertex_type = V;
+  using job_type = WorkStealingJob<V>;
 
  private:
-  // static_assert(std::is_invocable_r_v<void, Job&>);
 
   struct workerInfo {
     static constexpr worker_id_type UNINITIALIZED = std::numeric_limits<worker_id_type>::max();
@@ -134,7 +138,7 @@ struct scheduler {
   }
 
   // Push onto local stack.
-  void spawn(Job* job) {
+  void spawn(job_type* job) {
     int id = worker_id();
     [[maybe_unused]] bool first = deques[id].push_bottom(job);
 #if PARLAY_ELASTIC_PARALLELISM
@@ -164,7 +168,7 @@ struct scheduler {
   }
 
   // Pop from local stack.
-  Job* get_own_job() {
+  job_type* get_own_job() {
     auto id = worker_id();
     return deques[id].pop_bottom();
   }
@@ -185,7 +189,7 @@ struct scheduler {
   int num_deques;
   std::atomic<size_t> num_awake_workers;
   workerInfo parent_worker_info;
-  std::vector<internal::Deque<Job>> deques;
+  std::vector<internal::Deque<job_type>> deques;
   std::vector<attempt> attempts;
   std::vector<std::thread> spawned_threads;
   std::atomic<int> finished_flag;
@@ -208,7 +212,7 @@ struct scheduler {
       if constexpr (vertex_type::enabled) {
         assert(current_vertex<vertex_type>::ptr == nullptr);
       }
-      Job* job = get_job([&]() { return finished(); }, PARLAY_ELASTIC_PARALLELISM);
+      job_type* job = get_job([&]() { return finished(); }, PARLAY_ELASTIC_PARALLELISM);
 
       if (job)(*job)();
 #if PARLAY_ELASTIC_PARALLELISM
@@ -241,7 +245,7 @@ struct scheduler {
       current_vertex<vertex_type>::ptr = nullptr;
     }
     while (true) {
-      Job* job = get_job(done, false);  // timeout MUST BE false
+      job_type* job = get_job(done, false);  // timeout MUST BE false
 
       if (!job) break;
       (*job)();
@@ -261,9 +265,9 @@ struct scheduler {
   // is found, or, if timeout is true and it takes longer than
   // STEAL_TIMEOUT to find a job to steal.
   template <typename F>
-  Job* get_job(F&& break_early, bool timeout) {
+  job_type* get_job(F&& break_early, bool timeout) {
     if (break_early()) return nullptr;
-    Job* job = get_own_job();
+    job_type* job = get_own_job();
     if (job) return job;
     else job = steal_job(std::forward<F>(break_early), timeout);
     return job;
@@ -275,14 +279,14 @@ struct scheduler {
   // is found, or, if timeout is true and it takes longer than
   // STEAL_TIMEOUT to find a job to steal.
   template<typename F>
-  Job* steal_job(F&& break_early, bool timeout) {
+  job_type* steal_job(F&& break_early, bool timeout) {
     size_t id = worker_id();
     const auto start_time = std::chrono::steady_clock::now();
     do {
       // By coupon collector's problem, this should touch all.
       for (size_t i = 0; i <= YIELD_FACTOR * num_deques; i++) {
         if (break_early()) return nullptr;
-        Job* job = try_steal(id);
+        job_type* job = try_steal(id);
         if (job) return job;
       }
       std::this_thread::sleep_for(std::chrono::nanoseconds(num_deques * 100));
@@ -290,7 +294,7 @@ struct scheduler {
     return nullptr;
   }
 
-  Job* try_steal(size_t id) {
+  job_type* try_steal(size_t id) {
     // use hashing to get "random" target
     size_t target = (hash(id) + hash(attempts[id].val)) % num_deques;
     attempts[id].val++;
@@ -325,7 +329,7 @@ struct scheduler {
     auto orig_val = wake_up_counter.load();
     num_awake_workers.fetch_sub(1);
     size_t id = worker_id();
-    Job* job = nullptr;
+    job_type* job = nullptr;
     for (size_t i = 0; i <= YIELD_FACTOR * num_deques; i++) {
       if (finished()) {
         num_awake_workers.fetch_add(1);
@@ -375,9 +379,8 @@ class fork_join_scheduler {
  public:
 
   // Fork two thunks and wait until they both finish.
-  template <typename Job, typename L, typename R>
-  static void pardo(scheduler<Job>& sched, L&& left, R&& right, bool conservative = false) {
-    using V = typename Job::vertex_type;
+  template <typename V, typename L, typename R>
+  static void pardo(scheduler<V>& sched, L&& left, R&& right, bool conservative = false) {
     if constexpr (V::enabled) {
       // Fast path: outside any augmented region, this single branch is the
       // entire cost of augmentation support.
@@ -388,11 +391,11 @@ class fork_join_scheduler {
       }
     }
     return pardo_impl<false>(sched, std::forward<L>(left), std::forward<R>(right),
-                             conservative, static_cast<typename Job::vertex_type*>(nullptr));
+                             conservative, static_cast<V*>(nullptr));
   }
 
-  template <typename Job, typename F>
-  static void parfor(scheduler<Job>& sched, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
+  template <typename V, typename F>
+  static void parfor(scheduler<V>& sched, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
     if (end <= start) return;
     if (granularity == 0) {
       size_t done = get_granularity(start, end, f);
@@ -413,9 +416,8 @@ class fork_join_scheduler {
   //
   // If augment is called while an augmented region is already active, the
   // outer region's vertex is paused for the duration of the inner region.
-  template <typename V, typename Job, typename F>
-  static V augment(scheduler<Job>& sched, V initial, F&& f) {
-    using SV = typename Job::vertex_type;
+  template <typename V, typename SV, typename F>
+  static V augment(scheduler<SV>& sched, V initial, F&& f) {
     (void)sched;
     if constexpr (!SV::enabled) {
       std::forward<F>(f)();
@@ -467,10 +469,10 @@ class fork_join_scheduler {
   // The body of pardo. The Hooked=false instantiation is the plain
   // unaugmented fork-join; Hooked=true additionally maintains the vertices
   // of the parent and child strands.
-  template <bool Hooked, typename Job, typename L, typename R>
-  static void pardo_impl(scheduler<Job>& sched, L&& left, R&& right, bool conservative,
-                         [[maybe_unused]] typename Job::vertex_type* parent_v) {
-    using V = typename Job::vertex_type;
+  template <bool Hooked, typename V, typename L, typename R>
+  static void pardo_impl(scheduler<V>& sched, L&& left, R&& right, bool conservative,
+                         [[maybe_unused]] V* parent_v) {
+    using Job = typename scheduler<V>::job_type;
     [[maybe_unused]] V left_v, right_v;
     if constexpr (Hooked) {
       parent_v->stop();
@@ -533,8 +535,8 @@ class fork_join_scheduler {
     return done;
   }
 
-  template <typename Job, typename F>
-  static void parfor_(scheduler<Job>& sched, size_t start, size_t end, F& f, size_t granularity, bool conservative) {
+  template <typename V, typename F>
+  static void parfor_(scheduler<V>& sched, size_t start, size_t end, F& f, size_t granularity, bool conservative) {
     if ((end - start) <= granularity)
       for (size_t i = start; i < end; i++) f(i);
     else {

@@ -14,7 +14,7 @@ This repository has 5 branches:
   * [`grain-analysis`](https://github.com/nyu-parcour/scheduler-augmentation/tree/grain-analysis): implementation of the granularity analysis technique from the paper
   * [`space-profiling`](https://github.com/nyu-parcour/scheduler-augmentation/tree/space-profiling): implementation of the space profiling technique from the paper
   * [`graph-viz`](https://github.com/nyu-parcour/scheduler-augmentation/tree/graph-viz): computation graph visualization, for example as shown above.
-  * [`dynamic-vertex`](https://github.com/nyu-parcour/scheduler-augmentation/tree/dynamic-vertex): a more ergonomic interface, parameterizing the scheduler by a vertex container that can be dynamically instantiated. See the [minimal example](https://github.com/nyu-parcour/scheduler-augmentation/tree/dynamic-vertex/minimal-example) on this branch.
+  * [`dynamic-vertex`](https://github.com/nyu-parcour/scheduler-augmentation/tree/dynamic-vertex): a more ergonomic interface, parameterizing the scheduler by a vertex type that can be dynamically instantiated. This branch has been merged into `master`; see the [minimal example](minimal-example) there.
 
 # Citation
 
@@ -42,7 +42,11 @@ If you use Scheduler Augmentation, we would appreciate a citation:
 
 * It starts from a fork of [ParlayLib](https://github.com/cmuparlay/parlaylib).
 * The [`include/parlay/scheduler.h`](include/parlay/scheduler.h) file contains the changes implemented to extend ParlayLib's work-stealing scheduler with scheduler augmentation.
-* The [`include/parlay/internal/vertex.h`](include/parlay/internal/vertex.h) file contains the Vertex definition
+* The scheduler is templated on a *vertex type* (see the concept in [`include/parlay/vertex.h`](include/parlay/vertex.h)):
+  * [`include/parlay/work_span_vertex.h`](include/parlay/work_span_vertex.h): the work/span vertex used in the paper's evaluation.
+  * [`include/parlay/dynamic_vertex.h`](include/parlay/dynamic_vertex.h): the default type-erased vertex, letting `parlay::augment(V{}, f)` install any vertex type at runtime.
+  * Build with `-DPARLAY_NOOP_VERTEX` to compile out all augmentation, or `-DPARLAY_VERTEX_TYPE=<type>` to bake one vertex type in statically.
+  * [`minimal-example`](minimal-example) shows a self-contained custom vertex.
 * The `eval` directory contains the ParlayLib benchmarks and related scripts for experimentation.
 * The `pbbs` directory contains the [PBBS](https://github.com/cmuparlay/pbbsbench) benchmarks and related scripts for experimentation.
 
