@@ -4,7 +4,7 @@
 #include <type_traits>
 
 #include <parlay/parallel.h>
-#include <parlay/dynamic_vertex.h>
+#include <parlay/vertices/dynamic_vertex.h>
 
 #include "test_vertex_types.h"
 

@@ -19,7 +19,7 @@
 #include <functional>
 
 #include "vertex.h"
-#include "dynamic_vertex.h"
+#include "vertices/dynamic_vertex.h"
 
 #include "internal/work_stealing_deque.h"         // IWYU pragma: keep
 #include "internal/work_stealing_job.h"

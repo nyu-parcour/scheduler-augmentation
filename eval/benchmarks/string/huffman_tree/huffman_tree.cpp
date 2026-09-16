@@ -11,7 +11,7 @@
 
 #include "huffman_tree.h"
 #include <chrono>
-#include <parlay/work_span_vertex.h>
+#include <parlay/vertices/work_span_vertex.h>
 
 // **************************************************************
 // Driver

@@ -1,6 +1,6 @@
 #include "../parlay/internal/get_time.h"
 #include "../parlay/parallel.h"
-#include "../parlay/work_span_vertex.h"
+#include "../parlay/vertices/work_span_vertex.h"
 #include <chrono>
 #include <fstream>
 
