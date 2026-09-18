@@ -1,21 +1,27 @@
-// space_alloc: an explicitly accounted allocation interface for space_vertex.
+// space_alloc: explicitly accounted allocation for space_vertex.
 //
 // space_vertex reports its measures from allocate()/deallocate() calls, but
 // nothing in the library makes them: the allocator layer knows nothing about
-// vertices. These functions are the missing counterpart. Client code calls
-// them instead of new/parlay::sequence, and each call becomes exactly one
-// node of the computation graph that space_vertex folds.
+// vertices. This header is the missing counterpart, in two forms.
 //
-// Two properties distinguish space_alloc from parlay::sequence, and both
-// matter for a faithful measurement:
+//   space_alloc<T>(n, init) / space_free(p, n)
+//       A raw pair. Allocates n elements, initializes them with a serial
+//       loop, and charges n*sizeof(T) -- the logical size, not whatever the
+//       pool allocator consumed, which rounds up to a power of two. Each call
+//       is exactly one node of the graph that space_vertex folds, and the
+//       call site of space_free is where the memory stops being live, so its
+//       placement relative to a fork is part of what gets measured.
 //
-//   * Initialization is strictly sequential. Constructing a sequence runs a
-//     parallel_for over the elements, which would add fork nodes to the graph
-//     that the program itself never asked for.
-//   * The size reported to the vertex is the logical size n*sizeof(T), not
-//     whatever the underlying allocator actually consumed (the pool rounds up
-//     to a power of two). The measures are then a property of the program
-//     rather than of parlay's allocator.
+//   space_sequence<T>
+//       parlay::sequence<T> with an instrumented allocator, charged for
+//       whatever the sequence asks for. Note that this is a real sequence and
+//       behaves like one: it stores a size_t capacity alongside the elements,
+//       so an n-element sequence costs n*sizeof(T) plus that word, and it
+//       initializes its elements with a parallel_for, which forks once the
+//       length exceeds parlay's granularity threshold of 1 + 8192/sizeof(T)
+//       elements. Both show up in the measurements, correctly so -- they are
+//       things the program really does. sequence::uninitialized(n) skips the
+//       initialization entirely and so never forks.
 //
 // NOTE: this assumes the allocator layer itself is *not* instrumented. If
 // hooks are ever added to pool_allocator or type_allocator, every allocation
