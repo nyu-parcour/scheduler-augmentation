@@ -1,0 +1,3 @@
+allocfree 3000
+nqueens 16
+strassen 8192
