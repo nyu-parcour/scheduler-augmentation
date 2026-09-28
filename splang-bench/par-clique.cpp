@@ -22,7 +22,13 @@
 // The fork tree follows the other ports here (allocfree, nqueens): every
 // parfor and REDUCE-ADD is a binary par_do split at the midpoint down to single
 // iterations, so the graph being measured is the pseudocode's. --grain G is an
-// ablation that runs blocks of up to G iterations serially instead. Nothing
+// ablation that runs blocks of up to G iterations serially instead.
+//
+// Joins use parlay's default: a worker whose right branch was stolen steals
+// other work while it waits, on top of the stalled frame. That can bury a
+// frame that is ready to resume, holding its I' and T with no processor on
+// it, so footprint <= P * R* is not guaranteed. --join wait is the ablation
+// that keeps the busy-leaves property: blocked workers spin instead. Nothing
 // inside the measured region depends on timing, P or worker_id, so R1, R*,
 // Rinf and delta are properties of (graph, k, flags) alone.
 //
@@ -68,6 +74,7 @@ struct config {
   bool prune = false;
   bool id64 = false;
   std::size_t grain = 1;
+  bool join_wait = false;
   bool charge_graph = false;
   bool json = false;
   std::string write_graph;
@@ -86,6 +93,7 @@ struct config {
       "  --prune off|on        skip I' when |I'| < l-1 (default off)\n"
       "  --id u32|i64          element type of I' (default u32)\n"
       "  --grain G             serial block size of every parfor/reduce (default 1)\n"
+      "  --join steal|wait     blocked joins steal other work (default) or spin\n"
       "  --write-graph FILE    also write the symmetrized input as AdjacencyGraph text\n"
       "  --json                one JSON line instead of text\n",
       argv0);
@@ -128,6 +136,12 @@ config parse(int argc, char** argv) {
       else usage(argv[0]);
     }
     else if (std::strcmp(a, "--grain") == 0) c.grain = std::strtoull(next(), nullptr, 10);
+    else if (std::strcmp(a, "--join") == 0) {
+      const std::string s = next();
+      if (s == "steal") c.join_wait = false;
+      else if (s == "wait") c.join_wait = true;
+      else usage(argv[0]);
+    }
     else if (std::strcmp(a, "--write-graph") == 0) c.write_graph = next();
     else if (std::strcmp(a, "--json") == 0) c.json = true;
     else usage(argv[0]);
@@ -298,46 +312,54 @@ csr orient_by_degree(const csr& g, long k) {
 // ---------------------------------------------------------------------------
 // The measured computation
 
+// How the fork tree is built: the serial block size, and whether a join whose
+// right branch was stolen spins (conservative) rather than stealing.
+struct forks {
+  std::size_t grain;
+  bool conservative;
+};
+
 // The fork tree every parfor is built from: split [lo, hi) at the midpoint
 // until at most `grain` iterations remain, and run those serially.
 template <typename F>
-void parfor(std::size_t lo, std::size_t hi, std::size_t grain, const F& f) {
-  if (hi - lo <= grain) {
+void parfor(std::size_t lo, std::size_t hi, forks fk, const F& f) {
+  if (hi - lo <= fk.grain) {
     for (std::size_t i = lo; i < hi; i++) f(i);
     return;
   }
   const std::size_t mid = lo + (hi - lo) / 2;
-  parlay::par_do([&]() { parfor(lo, mid, grain, f); },
-                 [&]() { parfor(mid, hi, grain, f); });
+  parlay::par_do([&]() { parfor(lo, mid, fk, f); },
+                 [&]() { parfor(mid, hi, fk, f); }, fk.conservative);
 }
 
 // The same fork tree, summing f(i) over [lo, hi): REDUCE-ADD over T, or, where
 // T is not materialized, a reduce over the delayed sequence of f.
 template <typename F>
-count_t parsum(std::size_t lo, std::size_t hi, std::size_t grain, const F& f) {
-  if (hi - lo <= grain) {
+count_t parsum(std::size_t lo, std::size_t hi, forks fk, const F& f) {
+  if (hi - lo <= fk.grain) {
     count_t s = 0;
     for (std::size_t i = lo; i < hi; i++) s += f(i);
     return s;
   }
   const std::size_t mid = lo + (hi - lo) / 2;
   count_t a = 0, b = 0;
-  parlay::par_do([&]() { a = parsum(lo, mid, grain, f); },
-                 [&]() { b = parsum(mid, hi, grain, f); });
+  parlay::par_do([&]() { a = parsum(lo, mid, fk, f); },
+                 [&]() { b = parsum(mid, hi, fk, f); }, fk.conservative);
   return a + b;
 }
 
 template <typename Id>
 class arb_count {
  public:
-  arb_count(const csr& dg, const config& c) : dg_(dg), c_(c) {}
+  arb_count(const csr& dg, const config& c)
+      : dg_(dg), c_(c), fk_{c.grain, c.join_wait} {}
 
   // REC-COUNT-CLIQUES(DG, V, k). I = V is implicit, and under --T inner the
   // top-level T is not materialized: its sum is a reduce over the delayed
   // sequence of per-vertex counts.
   count_t run() const {
     const std::size_t k = static_cast<std::size_t>(c_.k);
-    return parsum(0, dg_.n, c_.grain, [&](std::size_t v) -> count_t {
+    return parsum(0, dg_.n, fk_, [&](std::size_t v) -> count_t {
       // INTERSECT(V, N+(v)) = N+(v), copied into a fresh I' like every other
       // iteration's.
       const std::size_t d = dg_.degree(v);
@@ -358,8 +380,8 @@ class arb_count {
   count_t rec(const Id* I, std::size_t n, std::size_t l) const {
     if (l == 1) return n;
     auto T = count_seq::uninitialized(n);
-    parfor(0, n, c_.grain, [&](std::size_t i) { T[i] = iteration(I, n, i, l); });
-    return parsum(0, n, c_.grain, [&](std::size_t i) { return T[i]; });
+    parfor(0, n, fk_, [&](std::size_t i) { T[i] = iteration(I, n, i, l); });
+    return parsum(0, n, fk_, [&](std::size_t i) { return T[i]; });
     // T is freed here, after the reduce.
   }
 
@@ -407,6 +429,7 @@ class arb_count {
 
   const csr& dg_;
   const config& c_;
+  const forks fk_;
 };
 
 // ---------------------------------------------------------------------------
@@ -460,16 +483,17 @@ int main(int argc, char** argv) {
   const splang_bench::measures m = splang_bench::collect(vtx, expect_alloc);
 
   const char* id = c.id64 ? "i64" : "u32";
+  const char* join = c.join_wait ? "wait" : "steal";
   if (c.json) {
     std::printf("{\"example\":\"par-clique\",\"graph\":%s,\"n\":%zu,\"m\":%zu,"
                 "\"m_oriented\":%zu,\"max_out_degree\":%zu,\"k\":%ld,"
                 "\"variant\":\"%s\",\"T\":\"%s\",\"order\":\"%s\",\"early_base\":%s,"
-                "\"prune\":%s,\"id\":\"%s\",\"grain\":%zu,\"charge_graph\":%s,"
+                "\"prune\":%s,\"id\":\"%s\",\"grain\":%zu,\"join\":\"%s\",\"charge_graph\":%s,"
                 "\"threads\":%lld,\"value\":\"%llu\",\"prep_ms\":%.3f,",
                 json_string(graph_name).c_str(), g.n, g.adj.size() / 2, dg.adj.size(),
                 max_out, c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
                 c.early_base ? "true" : "false", c.prune ? "true" : "false", id, c.grain,
-                c.charge_graph ? "true" : "false", m.threads,
+                join, c.charge_graph ? "true" : "false", m.threads,
                 static_cast<unsigned long long>(value), prep_ms);
     splang_bench::print_measures_json(m, ms);
     std::printf("}\n");
@@ -477,9 +501,10 @@ int main(int argc, char** argv) {
   else {
     std::printf("graph %s: n %zu, m %zu, oriented m %zu, max out-degree %zu\n",
                 graph_name.c_str(), g.n, g.adj.size() / 2, dg.adj.size(), max_out);
-    std::printf("k %ld, variant %s, T %s, order %s, early-base %s, prune %s, id %s, grain %zu\n",
+    std::printf("k %ld, variant %s, T %s, order %s, early-base %s, prune %s, id %s, grain %zu, "
+                "join %s\n",
                 c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
-                c.early_base ? "on" : "off", c.prune ? "on" : "off", id, c.grain);
+                c.early_base ? "on" : "off", c.prune ? "on" : "off", id, c.grain, join);
     std::printf("threads %lld\n", m.threads);
     std::printf("value  %llu\n", static_cast<unsigned long long>(value));
     splang_bench::print_measures_text(m, ms);
