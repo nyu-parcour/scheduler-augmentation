@@ -1,4 +1,4 @@
-// A port of splang's `allocfree` (Splang/Examples/Demo.lean:115-123):
+// A port of splang's `allocfree` (Splang/Examples/AllocFree.lean):
 //
 //   let parfor := fn rec parfor p =>
 //     let n := fst p in let f := snd p in
@@ -7,9 +7,11 @@
 //   in
 //   parfor (n, fn _ => let b := alloc 1000 0 in free b)
 //
-// n leaves, each of which allocates a 1000-cell array and immediately frees
-// it. Nothing is live across a fork, so one processor holds one array at a
-// time while an unbounded number hold all n: R1 = 1000, Rinf = 1000n.
+// n leaves, each of which allocates a 1000-element array and immediately frees
+// it. splang charges an array one header cell for its length on top of its
+// elements, so each array costs 1001 cells. Nothing is live across a fork, so
+// one processor holds one array at a time while an unbounded number hold all
+// n: R1 = 1001, Rinf = 1001n.
 
 #include <cstdint>
 
@@ -22,12 +24,16 @@
 namespace {
 
 // splang: alloc 1000 0
-constexpr std::int64_t leaf_cells = 1000;
+constexpr std::int64_t leaf_elements = 1000;
 
+// The array is a parlay::sequence, charged for everything it allocates. That
+// includes the capacity word sequence prepends to each buffer, which plays the
+// part of splang's header cell, so an array costs 1001 cells as it does in
+// splang. 1000 elements is below parallel_for's granularity threshold, so the
+// initialization runs serially and adds no forks.
 void leaf() {
-  std::int64_t* b = parlay::space_alloc<std::int64_t>(leaf_cells, 0);
-  splang_bench::do_not_optimize(b);
-  parlay::space_free(b, leaf_cells);
+  parlay::space_sequence<std::int64_t> b(leaf_elements, 0);
+  splang_bench::do_not_optimize(b.data());
 }
 
 // The recursion has no grain cutoff, because splang's has none: a serial

@@ -3,12 +3,16 @@
 
 V1  the measures are properties of the computation graph, not of the schedule,
     so they must not move as the worker count changes.
-V2  they must equal what splang's checker computes, up to a known per-example
-    scale factor. allocfree allocates through space_alloc and matches exactly;
-    nqueens allocates parlay::sequence boards, and sequence prepends a capacity
-    word to each buffer, so every measure comes out scaled by (n+1)/n.
-V3  the footprint the run actually reached must obey footprint <= P * R1. This
-    one IS schedule-dependent, so it is checked against the bound rather than
+V2  they must equal what splang's checker computes, exactly: delta, R1star,
+    Rinf, S and R1star_partial. Every port holds its arrays in a
+    parlay::sequence, whose capacity word stands in for splang's array header
+    cell, so no scale factor is needed; a port that needs one is not modelling
+    splang's cost model and should be fixed. The value must match too, except
+    for strassen, whose operands differ between the two sides; there each side
+    checks its own product (splang against Mathlib, the port by Freivalds).
+V3  the footprint the run actually reached must obey footprint <= P * R1star
+    and, when it applies, footprint <= S + P * R1star_partial. This one IS
+    schedule-dependent, so it is checked against the bounds rather than
     compared across worker counts.
 
 Usage:  python3 compare.py [--splang PATH] [--threads 1,2,8] [--quick]
@@ -26,23 +30,20 @@ DEFAULT_SPLANG = os.path.expanduser("~/repos/splang/.lake/build/bin/splang")
 # splang's default fuel is too small for the larger allocfree runs.
 FUEL = "100000000000"
 
-FIELDS = ("delta", "r1", "rinf")
+FIELDS = ("delta", "r1", "rinf", "s", "r1star_partial")
 
-# Numerator and denominator by which this port's measures differ from splang's,
-# as a function of the size. nqueens boards are n-cell arrays held in a
-# parlay::sequence, which stores a size_t capacity alongside them.
-SCALE = {
-    "allocfree": lambda n: (1, 1),
-    "nqueens": lambda n: (n + 1, n),
-}
+# Examples whose returned value means the same thing on both sides.
+SAME_VALUE = {"allocfree", "nqueens"}
 
 CASES = {
     "allocfree": [16, 256, 3000],
     "nqueens": [5, 6, 7, 8],
+    "strassen": [16, 32, 64],
 }
 QUICK = {
     "allocfree": [16],
     "nqueens": [5, 8],
+    "strassen": [32],
 }
 
 
@@ -76,39 +77,43 @@ def main():
     threads = [int(t) for t in args.threads.split(",")]
     cases = QUICK if args.quick else CASES
 
-    print("%-10s %6s %7s %8s %10s %12s %11s %11s   %s" %
-          ("example", "size", "threads", "value", "R1", "Rinf",
-           "footprint", "P*R1", "status"))
+    print("%-10s %5s %7s %8s %9s %8s %8s %9s %9s %9s   %s" %
+          ("example", "size", "threads", "R1star", "Rinf", "S", "R1*part",
+           "footprint", "P*R1star", "S+P*R1*p", "status"))
 
     failures = 0
     for example, sizes in cases.items():
         for size in sizes:
             ref = splang_reference(args.splang, example, size)
+            if example not in SAME_VALUE and not (ref["check"] or "").startswith("all "):
+                sys.exit("splang's %s %d is wrong: %s" % (example, size, ref["check"]))
+            compared = (("value",) if example in SAME_VALUE else ()) + FIELDS
             for t in threads:
                 got = parlay_run(example, size, t)
-                num, den = SCALE[example](size)
-                want = {f: ref[f] * num // den for f in FIELDS}
-                want["value"] = ref["value"]
-                bad = [f for f in ("value",) + FIELDS if got[f] != want[f]]
+                bad = [f for f in compared if got[f] != ref[f]]
+                partial = "%d" % got["partial_bound"] if got["partial_applies"] else "n/a"
                 if bad:
                     failures += 1
                     detail = "FAIL " + " ".join(
-                        "%s=%s want %s" % (f, got[f], want[f]) for f in bad)
+                        "%s=%s want %s" % (f, got[f], ref[f]) for f in bad)
                 elif not got["within_bound"]:
                     failures += 1
-                    detail = "FAIL footprint %d > P*R1 %d" % (got["footprint"], got["bound"])
+                    detail = "FAIL footprint %d > P*R1star %d" % (got["footprint"], got["bound"])
+                elif got["partial_applies"] and not got["within_partial_bound"]:
+                    failures += 1
+                    detail = "FAIL footprint %d > S+P*R1star_partial %s" % (got["footprint"], partial)
                 else:
                     detail = "ok"
-                print("%-10s %6d %7d %8s %10d %12d %11d %11d   %s" %
-                      (example, size, t, got["value"], got["r1"], got["rinf"],
-                       got["footprint"], got["bound"], detail))
+                print("%-10s %5d %7d %8d %9d %8d %8d %9d %9d %9s   %s" %
+                      (example, size, t, got["r1"], got["rinf"], got["s"],
+                       got["r1star_partial"], got["footprint"], got["bound"], partial, detail))
 
     print()
     if failures:
         print("%d mismatch(es)" % failures)
         return 1
-    print("all runs agree with splang and are invariant across %s workers; "
-          "every footprint is within P*R1" % ",".join(str(t) for t in threads))
+    print("all runs agree with splang and are invariant across %s workers; every footprint "
+          "is within P*R1star and S+P*R1star_partial" % ",".join(str(t) for t in threads))
     return 0
 
 

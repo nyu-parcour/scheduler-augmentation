@@ -3,7 +3,9 @@ INCLUDE := ../include
 CXX      ?= g++
 # space_vertex.h includes spdlog, which is vendored under include/spdlog/include
 # and is not on any default include path (cf. eval/benchmarks/Makefile).
-CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread
+# space_vertex is 64 bytes, over dynamic_vertex's default 48-byte inline payload.
+CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread \
+            -DPARLAY_DYNAMIC_VERTEX_CAPACITY=64
 
 BINS := allocfree nqueens strassen
 

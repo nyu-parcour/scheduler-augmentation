@@ -6,10 +6,11 @@
 // a freshly allocated copy of the board, which then stays live for the whole
 // recursive subtree below it, and is freed once that subtree finishes.
 //
-// That board is the reason R1 and Rinf separate so far. One processor holds
-// one board per row of a single root-to-leaf path (R1 = n(n+1)), while an
-// unbounded number hold one per surviving branch of the whole search tree
-// (Rinf = 16456 at n = 8).
+// That board is the reason R1 and Rinf separate so far. A board costs n+1
+// cells, n elements and splang's header cell. One processor holds the root
+// board plus one per row of a single root-to-leaf path (R1 = (n+1)^2), while
+// an unbounded number hold one per surviving branch of the whole search tree
+// (Rinf = 18513 at n = 8).
 
 #include <cstdint>
 #include <cstdio>
@@ -23,8 +24,9 @@
 namespace {
 
 // The board is a parlay::sequence, charged for everything it allocates. That
-// includes the capacity word sequence prepends to each buffer, so a board
-// costs n+1 cells where splang's costs n. At these sizes the element
+// includes the capacity word sequence prepends to each buffer, which plays the
+// part of splang's header cell, so a board costs n+1 cells as it does in
+// splang. At these sizes the element
 // initialization stays below parallel_for's granularity threshold and so runs
 // serially, adding no forks.
 using board = parlay::space_sequence<std::int64_t>;

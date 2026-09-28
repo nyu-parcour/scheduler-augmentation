@@ -73,29 +73,54 @@ inline void report(const char* example, const options& o, const char* value,
   const long long bound = threads * r1;
   const bool within_bound = footprint <= bound;
 
+  // The bound S + P*R1star_partial. S is the peak along the top-level spine
+  // with each parallel block's own peak counted as 0, and R1star_partial is
+  // the largest R1star of any block on it. It only applies when no block
+  // frees memory that was live before it started (partial_min_prefix == 0).
+  const long long s = static_cast<long long>(v.spine_seq / cell_bytes);
+  const long long r1star_partial = static_cast<long long>(v.spine_par / cell_bytes);
+  const long long partial_min_prefix = static_cast<long long>(v.spine_par_min / cell_bytes);
+  const bool partial_applies = v.spine_par_min >= 0;
+  const long long partial_bound = s + threads * r1star_partial;
+  const bool within_partial_bound = footprint <= partial_bound;
+
+  // The JSON also carries delta, r1 and the P*R1star bound, which compare.py
+  // checks against splang.
   if (o.json) {
     std::printf("{\"example\":\"%s\",\"size\":%lld,\"threads\":%lld,\"value\":\"%s\","
-                "\"delta\":%lld,\"r1\":%lld,\"rinf\":%lld,\"r1_lr\":%lld,"
-                "\"footprint\":%lld,\"bound\":%lld,\"within_bound\":%s,"
+                "\"footprint\":%lld,\"s\":%lld,\"r1star_partial\":%lld,"
+                "\"partial_bound\":%lld,\"partial_applies\":%s,"
+                "\"within_partial_bound\":%s,\"partial_min_prefix\":%lld,\"rinf\":%lld,"
+                "\"delta\":%lld,\"r1\":%lld,\"r1_lr\":%lld,"
+                "\"bound\":%lld,\"within_bound\":%s,"
                 "\"gross_bytes\":%lld,\"s1star_bytes\":%lld,\"sinf_bytes\":%lld,"
                 "\"s1_bytes\":%lld,\"footprint_bytes\":%lld,\"ms\":%.3f}\n",
                 example, static_cast<long long>(o.size), threads, value,
-                delta, r1, rinf, r1_lr,
-                footprint, bound, within_bound ? "true" : "false",
+                footprint, s, r1star_partial,
+                partial_bound, partial_applies ? "true" : "false",
+                within_partial_bound ? "true" : "false", partial_min_prefix, rinf,
+                delta, r1, r1_lr,
+                bound, within_bound ? "true" : "false",
                 static_cast<long long>(v.gross), static_cast<long long>(v.s1star),
                 static_cast<long long>(v.sinf), static_cast<long long>(v.s1),
                 static_cast<long long>(parlay::space_high_water_bytes()), ms);
   }
   else {
     std::printf("size %lld, threads %lld\n", static_cast<long long>(o.size), threads);
-    std::printf("value  %s\n", value);
-    std::printf("delta  %lld\n", delta);
-    std::printf("R1     %lld\n", r1);
-    std::printf("R1(LR) %lld\n", r1_lr);
-    std::printf("Rinf   %lld\n", rinf);
-    std::printf("footprint  %lld   (%s P*R1 = %lld)\n", footprint,
-                within_bound ? "<=" : "EXCEEDS", bound);
-    std::printf("time   %.0fms\n", ms);
+    std::printf("%-22s %s\n", "value", value);
+    std::printf("%-22s %lld   (observed HWM)\n", "footprint", footprint);
+    std::printf("%-22s %lld\n", "S", s);
+    std::printf("%-22s %lld\n", "R1star_partial", r1star_partial);
+    if (partial_applies) {
+      std::printf("%-22s %lld   (footprint %s)\n", "S + P*R1star_partial", partial_bound,
+                  within_partial_bound ? "within" : "EXCEEDS");
+    }
+    else {
+      std::printf("%-22s n/a   (a parallel block dips %lld cells below its start)\n",
+                  "S + P*R1star_partial", -partial_min_prefix);
+    }
+    std::printf("%-22s %lld\n", "Rinf", rinf);
+    std::printf("%-22s %.0fms\n", "time", ms);
   }
 }
 
