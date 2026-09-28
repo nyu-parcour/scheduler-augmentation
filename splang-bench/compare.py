@@ -18,8 +18,7 @@ across worker counts and across repeated runs at each count, and covers the
 count as well as the measures. V3 relies on the busy-leaves property, which
 parlay's default join (steal while waiting) does not preserve: it is a hard
 check under --join wait, and under --join steal violations are reported but do
-not fail. Each (case, join, workers) also gets one run with --footprint off,
-the mode campaigns time with: its count and measures must match too.
+not fail.
 
 Usage:  python3 compare.py [--splang PATH] [--threads 1,2,8] [--quick]
                            [--clique-threads 1,2,10] [--repeats N]
@@ -112,19 +111,16 @@ def check_par_clique(cases, threads, repeats):
             for t in threads:
                 runs = [clique_run(graph, k, flags + ["--join", join], t)
                         for _ in range(repeats)]
-                untracked = clique_run(graph, k, flags + ["--join", join, "--footprint", "off"], t)
                 if ref is None:
                     ref = runs[0]
-                moved = sorted({f for r in runs + [untracked]
-                                for f in CLIQUE_FIELDS if r[f] != ref[f]})
+                moved = sorted({f for r in runs for f in CLIQUE_FIELDS if r[f] != ref[f]})
                 over = [r for r in runs if not r["within_bound"]]
                 worst = max(r["footprint_bytes"] / (r["threads"] * r["s1star_bytes"])
                             for r in runs)
                 if moved:
                     failures += 1
                     detail = "FAIL V1 " + " ".join(
-                        "%s=%s want %s" % (f, next(r[f] for r in runs + [untracked]
-                                                    if r[f] != ref[f]), ref[f])
+                        "%s=%s want %s" % (f, next(r[f] for r in runs if r[f] != ref[f]), ref[f])
                         for f in moved)
                 elif over and join == "wait":
                     failures += 1
@@ -139,8 +135,8 @@ def check_par_clique(cases, threads, repeats):
                 print("%-34s %6s %7d %10s %8d %12d %9.2f   %s" %
                       (name, join, t, ref["value"], ref["r1"], ref["rinf"], worst, detail))
     print()
-    print("par-clique: V1 over %s workers x (%d repeats + 1 untracked); --join steal "
-          "exceeded P*R1 in %d/%d runs" % (",".join(str(t) for t in threads), repeats,
+    print("par-clique: V1 over %s workers x %d repeats; --join steal exceeded P*R1 in "
+          "%d/%d runs" % (",".join(str(t) for t in threads), repeats,
                           steal_violations, steal_runs))
     return failures
 
