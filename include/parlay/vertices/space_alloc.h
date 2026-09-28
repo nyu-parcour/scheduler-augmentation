@@ -52,10 +52,31 @@ namespace parlay {
 //
 // Both are maintained whether or not augmentation is enabled, so that a build
 // with the vertex compiled out still reports a footprint.
+//
+// Keeping them exact takes one shared counter that every charge and credit
+// updates, which serializes allocation across workers: for an allocation-heavy
+// program the footprint then dominates the running time at high P. They can be
+// switched off (space_track_footprint(false)) for runs that are timed but whose
+// footprint is not needed; space_vertex's measures are unaffected.
 namespace internal {
 inline std::atomic<std::int64_t> space_live{0};
 inline std::atomic<std::int64_t> space_high_water{0};
+// Read on every charge and credit, and written only between measured regions,
+// so its cache line stays shared and costs no contention.
+inline std::atomic<bool> space_footprint_on{true};
 }  // namespace internal
+
+// Whether charges and credits maintain the live total and its peak. On by
+// default. Change it only between measured regions, and reset the counters
+// after turning it back on: a credit for memory charged while it was off would
+// drive the live total negative.
+inline void space_track_footprint(bool on) noexcept {
+  internal::space_footprint_on.store(on, std::memory_order_relaxed);
+}
+
+inline bool space_footprint_tracked() noexcept {
+  return internal::space_footprint_on.load(std::memory_order_relaxed);
+}
 
 // Bytes currently held by space_alloc allocations.
 inline std::int64_t space_live_bytes() noexcept {
@@ -84,6 +105,7 @@ inline void space_charge(std::size_t n) noexcept {
   if constexpr (augmentation_enabled) {
     if (space_vertex* v = current_vertex<space_vertex>()) v->allocate(n);
   }
+  if (!space_footprint_tracked()) return;
   // The live total can only rise here, so this is the only place the peak
   // needs to be republished. Relaxed suffices: the counters are not used to
   // order anything, and the scheduler's joins already give the final reader
@@ -102,6 +124,7 @@ inline void space_credit(std::size_t n) noexcept {
   if constexpr (augmentation_enabled) {
     if (space_vertex* v = current_vertex<space_vertex>()) v->deallocate(n);
   }
+  if (!space_footprint_tracked()) return;
   internal::space_live.fetch_sub(static_cast<std::int64_t>(n), std::memory_order_relaxed);
 }
 

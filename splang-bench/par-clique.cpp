@@ -75,6 +75,7 @@ struct config {
   bool id64 = false;
   std::size_t grain = 1;
   bool join_wait = false;
+  bool footprint = true;
   bool charge_graph = false;
   bool json = false;
   std::string write_graph;
@@ -94,6 +95,7 @@ struct config {
       "  --id u32|i64          element type of I' (default u32)\n"
       "  --grain G             serial block size of every parfor/reduce (default 1)\n"
       "  --join steal|wait     blocked joins steal other work (default) or spin\n"
+      "  --footprint on|off    track the global footprint (default on); off for timing runs\n"
       "  --write-graph FILE    also write the symmetrized input as AdjacencyGraph text\n"
       "  --json                one JSON line instead of text\n",
       argv0);
@@ -142,6 +144,7 @@ config parse(int argc, char** argv) {
       else if (s == "wait") c.join_wait = true;
       else usage(argv[0]);
     }
+    else if (std::strcmp(a, "--footprint") == 0) c.footprint = on_off(argv[0], next());
     else if (std::strcmp(a, "--write-graph") == 0) c.write_graph = next();
     else if (std::strcmp(a, "--json") == 0) c.json = true;
     else usage(argv[0]);
@@ -471,6 +474,10 @@ int main(int argc, char** argv) {
   const double prep_ms = prep.ms();
 
   count_t value = 0;
+  // The exact footprint serializes every charge and credit on one counter,
+  // which dominates the time at high P, so timing runs turn it off. R1, R* and
+  // Rinf come from the vertex and are the same either way.
+  parlay::space_track_footprint(c.footprint);
   parlay::space_reset_counters();
   splang_bench::timer t;
   auto vtx = parlay::augment(parlay::space_vertex{}, [&]() {
@@ -489,11 +496,13 @@ int main(int argc, char** argv) {
                 "\"m_oriented\":%zu,\"max_out_degree\":%zu,\"k\":%ld,"
                 "\"variant\":\"%s\",\"T\":\"%s\",\"order\":\"%s\",\"early_base\":%s,"
                 "\"prune\":%s,\"id\":\"%s\",\"grain\":%zu,\"join\":\"%s\",\"charge_graph\":%s,"
+                "\"footprint_tracked\":%s,"
                 "\"threads\":%lld,\"value\":\"%llu\",\"prep_ms\":%.3f,",
                 json_string(graph_name).c_str(), g.n, g.adj.size() / 2, dg.adj.size(),
                 max_out, c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
                 c.early_base ? "true" : "false", c.prune ? "true" : "false", id, c.grain,
-                join, c.charge_graph ? "true" : "false", m.threads,
+                join, c.charge_graph ? "true" : "false", c.footprint ? "true" : "false",
+                m.threads,
                 static_cast<unsigned long long>(value), prep_ms);
     splang_bench::print_measures_json(m, ms);
     std::printf("}\n");

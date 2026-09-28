@@ -48,7 +48,7 @@ inline options parse_args(int argc, char** argv, std::int64_t default_size) {
 // raw byte figures), and the footprint this particular run reached.
 struct measures {
   long long threads, delta, r1, r1_lr, rinf, footprint, bound;
-  bool within_bound;
+  bool footprint_tracked, within_bound;
   long long gross_bytes, s1star_bytes, sinf_bytes, s1_bytes, footprint_bytes;
 };
 
@@ -87,12 +87,26 @@ inline measures collect(const parlay::space_vertex& v, bool expect_alloc = true)
   // are not whole cells (par-clique's u32 ids) can have P * floor(R1) fall
   // short of floor(P * R1), which would flag a run that is within the bound.
   m.within_bound = m.footprint_bytes <= m.threads * m.s1star_bytes;
+
+  // With footprint tracking off (parlay::space_track_footprint) there is no
+  // footprint to report, and none to check against the bound.
+  m.footprint_tracked = parlay::space_footprint_tracked();
   return m;
 }
 
 // The measure fields of the JSON line, "delta" through "ms", without braces,
-// so that a port can print its own identifying fields ahead of them.
+// so that a port can print its own identifying fields ahead of them. The
+// footprint fields are null when footprint tracking was off.
 inline void print_measures_json(const measures& m, double ms) {
+  if (!m.footprint_tracked) {
+    std::printf("\"delta\":%lld,\"r1\":%lld,\"rinf\":%lld,\"r1_lr\":%lld,"
+                "\"footprint\":null,\"bound\":%lld,\"within_bound\":null,"
+                "\"gross_bytes\":%lld,\"s1star_bytes\":%lld,\"sinf_bytes\":%lld,"
+                "\"s1_bytes\":%lld,\"footprint_bytes\":null,\"ms\":%.3f",
+                m.delta, m.r1, m.rinf, m.r1_lr, m.bound,
+                m.gross_bytes, m.s1star_bytes, m.sinf_bytes, m.s1_bytes, ms);
+    return;
+  }
   std::printf("\"delta\":%lld,\"r1\":%lld,\"rinf\":%lld,\"r1_lr\":%lld,"
               "\"footprint\":%lld,\"bound\":%lld,\"within_bound\":%s,"
               "\"gross_bytes\":%lld,\"s1star_bytes\":%lld,\"sinf_bytes\":%lld,"
@@ -108,8 +122,13 @@ inline void print_measures_text(const measures& m, double ms) {
   std::printf("R1     %lld\n", m.r1);
   std::printf("R1(LR) %lld\n", m.r1_lr);
   std::printf("Rinf   %lld\n", m.rinf);
-  std::printf("footprint  %lld   (%s P*R1 = %lld)\n", m.footprint,
-              m.within_bound ? "<=" : "EXCEEDS", m.bound);
+  if (m.footprint_tracked) {
+    std::printf("footprint  %lld   (%s P*R1 = %lld)\n", m.footprint,
+                m.within_bound ? "<=" : "EXCEEDS", m.bound);
+  }
+  else {
+    std::printf("footprint  not tracked\n");
+  }
   std::printf("time   %.0fms\n", ms);
 }
 
