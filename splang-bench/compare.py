@@ -4,9 +4,11 @@
 V1  the measures are properties of the computation graph, not of the schedule,
     so they must not move as the worker count changes.
 V2  they must equal what splang's checker computes, up to a known per-example
-    scale factor. allocfree allocates through space_alloc and matches exactly;
-    nqueens allocates parlay::sequence boards, and sequence prepends a capacity
-    word to each buffer, so every measure comes out scaled by (n+1)/n.
+    scale factor. splang charges every array one header cell for its size.
+    nqueens allocates parlay::sequence boards, and sequence stores a capacity
+    word with each buffer, so it matches exactly; allocfree allocates raw
+    1000-cell blocks through space_alloc, so every measure comes out scaled by
+    1000/1001.
 V3  the footprint the run actually reached must obey footprint <= P * R1. This
     one IS schedule-dependent, so it is checked against the bound rather than
     compared across worker counts.
@@ -29,11 +31,12 @@ FUEL = "100000000000"
 FIELDS = ("delta", "r1", "rinf")
 
 # Numerator and denominator by which this port's measures differ from splang's,
-# as a function of the size. nqueens boards are n-cell arrays held in a
-# parlay::sequence, which stores a size_t capacity alongside them.
+# as a function of the size. splang arrays carry a one-cell size header. The
+# allocfree leaves space_alloc a bare 1000 cells; the nqueens boards are held in
+# a parlay::sequence, whose capacity word plays the part of that header.
 SCALE = {
-    "allocfree": lambda n: (1, 1),
-    "nqueens": lambda n: (n + 1, n),
+    "allocfree": lambda n: (1000, 1001),
+    "nqueens": lambda n: (1, 1),
 }
 
 CASES = {
