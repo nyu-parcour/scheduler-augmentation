@@ -44,58 +44,86 @@ inline options parse_args(int argc, char** argv, std::int64_t default_size) {
   return o;
 }
 
-// `value` is printed as a string so that it lines up with splang's JSON, which
-// reports "()" for allocfree and a numeral for nqueens.
-inline void report(const char* example, const options& o, const char* value,
-                   const parlay::space_vertex& v, double ms) {
-  // A vertex that saw nothing means the computation ran outside the augmented
-  // region, or under a scheduler installing some other vertex type. Every
-  // program here allocates, so zero is always a harness bug rather than a
-  // measurement.
+// The schedule-independent measures of an augmented run (in cells, plus the
+// raw byte figures), and the footprint this particular run reached.
+struct measures {
+  long long threads, delta, r1, r1_lr, rinf, footprint, bound;
+  bool within_bound;
+  long long gross_bytes, s1star_bytes, sinf_bytes, s1_bytes, footprint_bytes;
+};
+
+// A vertex that saw nothing means the computation ran outside the augmented
+// region, or under a scheduler installing some other vertex type, so zero is
+// treated as a harness bug. A program that can legitimately allocate nothing
+// (par-clique on a graph with no oriented edges) passes expect_alloc = false.
+inline measures collect(const parlay::space_vertex& v, bool expect_alloc = true) {
   if constexpr (parlay::augmentation_enabled) {
-    if (v.s1star == 0) {
+    if (expect_alloc && v.s1star == 0) {
       std::fprintf(stderr, "error: vertex recorded no allocation; "
                            "is the computation inside parlay::augment?\n");
       std::exit(1);
     }
   }
 
-  const long long threads = static_cast<long long>(parlay::num_workers());
-  const long long delta = static_cast<long long>(v.gross / cell_bytes);
-  const long long r1 = static_cast<long long>(v.s1star / cell_bytes);
-  const long long r1_lr = static_cast<long long>(v.s1 / cell_bytes);
-  const long long rinf = static_cast<long long>(v.sinf / cell_bytes);
+  measures m;
+  m.threads = static_cast<long long>(parlay::num_workers());
+  m.delta = static_cast<long long>(v.gross / cell_bytes);
+  m.r1 = static_cast<long long>(v.s1star / cell_bytes);
+  m.r1_lr = static_cast<long long>(v.s1 / cell_bytes);
+  m.rinf = static_cast<long long>(v.sinf / cell_bytes);
 
   // The peak this particular run actually reached, and the bound R1 places on
   // it. Unlike the measures above this one is schedule-dependent.
-  const long long footprint =
-      static_cast<long long>(parlay::space_high_water_bytes() / cell_bytes);
-  const long long bound = threads * r1;
-  const bool within_bound = footprint <= bound;
+  m.footprint = static_cast<long long>(parlay::space_high_water_bytes() / cell_bytes);
+  m.bound = m.threads * m.r1;
+  m.within_bound = m.footprint <= m.bound;
 
+  m.gross_bytes = static_cast<long long>(v.gross);
+  m.s1star_bytes = static_cast<long long>(v.s1star);
+  m.sinf_bytes = static_cast<long long>(v.sinf);
+  m.s1_bytes = static_cast<long long>(v.s1);
+  m.footprint_bytes = static_cast<long long>(parlay::space_high_water_bytes());
+  return m;
+}
+
+// The measure fields of the JSON line, "delta" through "ms", without braces,
+// so that a port can print its own identifying fields ahead of them.
+inline void print_measures_json(const measures& m, double ms) {
+  std::printf("\"delta\":%lld,\"r1\":%lld,\"rinf\":%lld,\"r1_lr\":%lld,"
+              "\"footprint\":%lld,\"bound\":%lld,\"within_bound\":%s,"
+              "\"gross_bytes\":%lld,\"s1star_bytes\":%lld,\"sinf_bytes\":%lld,"
+              "\"s1_bytes\":%lld,\"footprint_bytes\":%lld,\"ms\":%.3f",
+              m.delta, m.r1, m.rinf, m.r1_lr,
+              m.footprint, m.bound, m.within_bound ? "true" : "false",
+              m.gross_bytes, m.s1star_bytes, m.sinf_bytes, m.s1_bytes,
+              m.footprint_bytes, ms);
+}
+
+inline void print_measures_text(const measures& m, double ms) {
+  std::printf("delta  %lld\n", m.delta);
+  std::printf("R1     %lld\n", m.r1);
+  std::printf("R1(LR) %lld\n", m.r1_lr);
+  std::printf("Rinf   %lld\n", m.rinf);
+  std::printf("footprint  %lld   (%s P*R1 = %lld)\n", m.footprint,
+              m.within_bound ? "<=" : "EXCEEDS", m.bound);
+  std::printf("time   %.0fms\n", ms);
+}
+
+// `value` is printed as a string so that it lines up with splang's JSON, which
+// reports "()" for allocfree and a numeral for nqueens.
+inline void report(const char* example, const options& o, const char* value,
+                   const parlay::space_vertex& v, double ms) {
+  const measures m = collect(v);
   if (o.json) {
-    std::printf("{\"example\":\"%s\",\"size\":%lld,\"threads\":%lld,\"value\":\"%s\","
-                "\"delta\":%lld,\"r1\":%lld,\"rinf\":%lld,\"r1_lr\":%lld,"
-                "\"footprint\":%lld,\"bound\":%lld,\"within_bound\":%s,"
-                "\"gross_bytes\":%lld,\"s1star_bytes\":%lld,\"sinf_bytes\":%lld,"
-                "\"s1_bytes\":%lld,\"footprint_bytes\":%lld,\"ms\":%.3f}\n",
-                example, static_cast<long long>(o.size), threads, value,
-                delta, r1, rinf, r1_lr,
-                footprint, bound, within_bound ? "true" : "false",
-                static_cast<long long>(v.gross), static_cast<long long>(v.s1star),
-                static_cast<long long>(v.sinf), static_cast<long long>(v.s1),
-                static_cast<long long>(parlay::space_high_water_bytes()), ms);
+    std::printf("{\"example\":\"%s\",\"size\":%lld,\"threads\":%lld,\"value\":\"%s\",",
+                example, static_cast<long long>(o.size), m.threads, value);
+    print_measures_json(m, ms);
+    std::printf("}\n");
   }
   else {
-    std::printf("size %lld, threads %lld\n", static_cast<long long>(o.size), threads);
+    std::printf("size %lld, threads %lld\n", static_cast<long long>(o.size), m.threads);
     std::printf("value  %s\n", value);
-    std::printf("delta  %lld\n", delta);
-    std::printf("R1     %lld\n", r1);
-    std::printf("R1(LR) %lld\n", r1_lr);
-    std::printf("Rinf   %lld\n", rinf);
-    std::printf("footprint  %lld   (%s P*R1 = %lld)\n", footprint,
-                within_bound ? "<=" : "EXCEEDS", bound);
-    std::printf("time   %.0fms\n", ms);
+    print_measures_text(m, ms);
   }
 }
 
