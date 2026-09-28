@@ -76,13 +76,17 @@ inline measures collect(const parlay::space_vertex& v, bool expect_alloc = true)
   // it. Unlike the measures above this one is schedule-dependent.
   m.footprint = static_cast<long long>(parlay::space_high_water_bytes() / cell_bytes);
   m.bound = m.threads * m.r1;
-  m.within_bound = m.footprint <= m.bound;
 
   m.gross_bytes = static_cast<long long>(v.gross);
   m.s1star_bytes = static_cast<long long>(v.s1star);
   m.sinf_bytes = static_cast<long long>(v.sinf);
   m.s1_bytes = static_cast<long long>(v.s1);
   m.footprint_bytes = static_cast<long long>(parlay::space_high_water_bytes());
+
+  // Checked in bytes. The cell figures are floored, and a port whose buffers
+  // are not whole cells (par-clique's u32 ids) can have P * floor(R1) fall
+  // short of floor(P * R1), which would flag a run that is within the bound.
+  m.within_bound = m.footprint_bytes <= m.threads * m.s1star_bytes;
   return m;
 }
 
