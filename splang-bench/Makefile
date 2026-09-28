@@ -5,7 +5,7 @@ CXX      ?= g++
 # and is not on any default include path (cf. eval/benchmarks/Makefile).
 CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread
 
-BINS := allocfree nqueens strassen
+BINS := allocfree nqueens strassen par-clique
 
 all: $(BINS)
 
@@ -17,6 +17,9 @@ nqueens: nqueens.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 
 strassen: strassen.cpp strassen.h report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) strassen.cpp -o $@
+
+par-clique: par-clique.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
+	$(CXX) $(CXXFLAGS) par-clique.cpp -o $@
 
 check: $(BINS)
 	python3 compare.py
