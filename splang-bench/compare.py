@@ -13,7 +13,15 @@ V3  the footprint the run actually reached must obey footprint <= P * R1. This
     one IS schedule-dependent, so it is checked against the bound rather than
     compared across worker counts.
 
+par-clique has no splang counterpart, so it gets V1 and V3 only. V1 is checked
+across worker counts and across repeated runs at each count, and covers the
+count as well as the measures. V3 relies on the busy-leaves property, which
+parlay's default join (steal while waiting) does not preserve: it is a hard
+check under --join wait, and under --join steal violations are reported but do
+not fail.
+
 Usage:  python3 compare.py [--splang PATH] [--threads 1,2,8] [--quick]
+                           [--clique-threads 1,2,10] [--repeats N]
 """
 
 import argparse
@@ -48,6 +56,23 @@ QUICK = {
     "nqueens": [5, 8],
 }
 
+# par-clique cases: (graph arguments, k, extra flags). Each runs under both
+# join policies. The graphs are par-clique's built-in seeded RMAT, so no files
+# are needed.
+CLIQUE_JOINS = ("steal", "wait")
+CLIQUE_FIELDS = ("value", "delta", "r1", "rinf", "r1_lr")
+CLIQUE_CASES = [
+    (["--rmat", "256,4000,1"], 4, []),
+    (["--rmat", "256,4000,1"], 4, ["--prune", "on"]),
+    (["--rmat", "256,4000,1"], 4, ["--id", "i64"]),
+    (["--rmat", "256,4000,1"], 4, ["--early-base", "off"]),
+    (["--rmat", "256,4000,1"], 4, ["--grain", "4"]),
+    (["--rmat", "1024,20000,2"], 5, []),
+    (["--rmat", "4096,60000,3"], 4, []),
+    (["--rmat", "4096,60000,3"], 6, []),
+]
+CLIQUE_QUICK = CLIQUE_CASES[:1] + CLIQUE_CASES[5:6]
+
 
 def run_json(argv, env=None):
     out = subprocess.run(argv, capture_output=True, text=True, env=env)
@@ -65,10 +90,63 @@ def parlay_run(example, size, threads):
     return run_json([os.path.join(HERE, example), "--size", str(size), "--json"], env=env)
 
 
+def clique_run(graph, k, flags, threads):
+    env = dict(os.environ, PARLAY_NUM_THREADS=str(threads))
+    argv = [os.path.join(HERE, "par-clique")] + graph + ["--k", str(k), "--json"] + flags
+    return run_json(argv, env=env)
+
+
+def check_par_clique(cases, threads, repeats):
+    """V1 and V3 for par-clique. Returns the number of failures."""
+    print()
+    print("%-34s %6s %7s %10s %8s %12s %9s   %s" %
+          ("par-clique case", "join", "threads", "value", "R1", "Rinf",
+           "fp/P*R1", "status"))
+    failures = 0
+    steal_violations = steal_runs = 0
+    for graph, k, flags in cases:
+        name = " ".join(graph[1:] + ["k=%d" % k] + flags)
+        for join in CLIQUE_JOINS:
+            ref = None
+            for t in threads:
+                runs = [clique_run(graph, k, flags + ["--join", join], t)
+                        for _ in range(repeats)]
+                if ref is None:
+                    ref = runs[0]
+                moved = sorted({f for r in runs for f in CLIQUE_FIELDS if r[f] != ref[f]})
+                over = [r for r in runs if not r["within_bound"]]
+                worst = max(r["footprint_bytes"] / (r["threads"] * r["s1star_bytes"])
+                            for r in runs)
+                if moved:
+                    failures += 1
+                    detail = "FAIL V1 " + " ".join(
+                        "%s=%s want %s" % (f, next(r[f] for r in runs if r[f] != ref[f]), ref[f])
+                        for f in moved)
+                elif over and join == "wait":
+                    failures += 1
+                    detail = "FAIL V3 %d/%d runs exceed P*R1" % (len(over), len(runs))
+                elif over:
+                    detail = "ok (V3: %d/%d over, not enforced)" % (len(over), len(runs))
+                else:
+                    detail = "ok"
+                if join == "steal":
+                    steal_violations += len(over)
+                    steal_runs += len(runs)
+                print("%-34s %6s %7d %10s %8d %12d %9.2f   %s" %
+                      (name, join, t, ref["value"], ref["r1"], ref["rinf"], worst, detail))
+    print()
+    print("par-clique: V1 over %s workers x %d repeats; --join steal exceeded P*R1 in "
+          "%d/%d runs" % (",".join(str(t) for t in threads), repeats,
+                          steal_violations, steal_runs))
+    return failures
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--splang", default=os.environ.get("SPLANG", DEFAULT_SPLANG))
     ap.add_argument("--threads", default="1,2,3,8,16,64")
+    ap.add_argument("--clique-threads", default="1,2,3,8,10,16")
+    ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
 
@@ -109,10 +187,16 @@ def main():
     print()
     if failures:
         print("%d mismatch(es)" % failures)
-        return 1
-    print("all runs agree with splang and are invariant across %s workers; "
-          "every footprint is within P*R1" % ",".join(str(t) for t in threads))
-    return 0
+    else:
+        print("all runs agree with splang and are invariant across %s workers; "
+              "every footprint is within P*R1" % ",".join(str(t) for t in threads))
+
+    clique_threads = [int(t) for t in args.clique_threads.split(",")]
+    clique_failures = check_par_clique(CLIQUE_QUICK if args.quick else CLIQUE_CASES,
+                                       clique_threads, args.repeats)
+    if clique_failures:
+        print("par-clique: %d failure(s)" % clique_failures)
+    return 1 if failures or clique_failures else 0
 
 
 if __name__ == "__main__":
