@@ -94,7 +94,7 @@ struct config {
       "  --variant faithful    Algorithm 1 as written (default)\n"
       "  --T none|inner|all    where T is materialized: nowhere, below the top level\n"
       "                        (default), or at every level including the n-sized top\n"
-      "  --order degree        degree ordering (default)\n"
+      "  --order degree|kcore  rank by (degree, id) (default), or by k-core peel\n"
       "  --early-base on|off   at l = 2 count |I n N+(v)| without building I' (default on)\n"
       "  --prune off|on        skip I' when |I'| < l-1 (default off)\n"
       "  --id u32|i64          element type of I' (default u32)\n"
@@ -167,8 +167,8 @@ config parse(int argc, char** argv) {
     std::exit(2);
   };
   if (c.t_mode != "none" && c.t_mode != "inner" && c.t_mode != "all") usage(argv[0]);
+  if (c.order != "degree" && c.order != "kcore") usage(argv[0]);
   if (c.variant != "faithful") not_yet("--variant", c.variant);
-  if (c.order != "degree") not_yet("--order", c.order);
   return c;
 }
 
@@ -293,18 +293,84 @@ csr rmat(std::uint64_t n, std::uint64_t m, std::uint64_t seed) {
   return symmetric_from_edges(std::size_t{1} << logn, e);
 }
 
-// ORIENT by degree: rank vertices by (degree, id), keep the arc u -> v iff
-// rank[u] < rank[v] and both endpoints have degree >= k-1 (as GBBS does), and
-// relabel every vertex by its rank. Out-neighbour lists come out sorted, and
-// every out-neighbour of v has a larger id than v.
-csr orient_by_degree(const csr& g, long k) {
-  const std::size_t n = g.n;
+// The rank of every vertex when the vertices are sorted by (key(v), v).
+template <typename Key>
+parlay::sequence<vid> rank_by(std::size_t n, const Key& key) {
   auto keys = parlay::sort(parlay::tabulate(n, [&](std::size_t v) {
-    return std::pair<std::uint64_t, vid>{g.degree(v), static_cast<vid>(v)};
+    return std::pair{key(v), static_cast<vid>(v)};
   }));
   parlay::sequence<vid> rank(n);
   parlay::parallel_for(0, n, [&](std::size_t i) { rank[keys[i].second] = static_cast<vid>(i); });
+  return rank;
+}
 
+// Degree order: rank by (degree, id), as GBBS's degreeOrderNodes.
+parlay::sequence<vid> degree_rank(const csr& g) {
+  return rank_by(g.n, [&](std::size_t v) { return static_cast<std::uint64_t>(g.degree(v)); });
+}
+
+// Degeneracy order, from the bucketed parallel peel of parlaylib's
+// examples/kcore.h, adapted to record the level and round in which each vertex
+// is peeled. Vertices are ranked by (level, round, id). A vertex peeled in some
+// round at level l has at most l neighbours not yet peeled when that round
+// starts, and those include all of its out-neighbours under this rank, so the
+// max out-degree is at most the degeneracy, which is returned in `degeneracy`.
+// The rounds depend only on the graph, so the order is deterministic.
+//
+// GBBS's -o 2 instead sorts vertices by coreness and reads the sorted list as
+// a rank; its orientation then has nothing to do with coreness.
+parlay::sequence<vid> kcore_rank(const csr& g, std::size_t& degeneracy) {
+  const std::size_t n = g.n;
+  auto done = parlay::sequence<bool>(n, false);
+  auto d = parlay::tabulate(n, [&](std::size_t v) { return static_cast<vid>(g.degree(v)); });
+  const vid maxd = (n == 0 ? 0 : parlay::reduce(d, parlay::maximum<vid>())) + 1;
+  auto di = parlay::tabulate(n, [&](std::size_t v) { return std::pair(d[v], static_cast<vid>(v)); });
+  auto buckets = parlay::map(parlay::group_by_index(di, maxd), [](auto& b) {
+    return parlay::sequence<parlay::sequence<vid>>(1, b);
+  });
+  // (level, round) of every vertex.
+  auto peeled = parlay::sequence<std::pair<vid, std::uint64_t>>(n);
+  vid k = 0;
+  std::size_t total = 0;
+  std::uint64_t round = 0;
+  degeneracy = 0;
+
+  while (total < n) {
+    auto b = parlay::filter(parlay::flatten(buckets[k]),
+                            [&](vid v) { return done[v] ? false : (done[v] = true); });
+    buckets[k].clear();
+    if (b.size() == 0) {
+      k++;
+      continue;
+    }
+    total += b.size();
+    degeneracy = k;
+    parlay::for_each(b, [&](vid v) { peeled[v] = {k, round}; });
+    round++;
+    auto ngh = parlay::filter(parlay::flatten(parlay::map(b, [&](vid v) {
+                                return parlay::to_sequence(parlay::make_slice(
+                                    g.neighbors(v), g.neighbors(v) + g.degree(v)));
+                              })),
+                              [&](vid u) { return d[u] > k; });
+    auto u = parlay::map(parlay::histogram_by_key<vid>(ngh), [&](auto uc) {
+      auto [u, c] = uc;
+      d[u] = std::max(k, d[u] - c);
+      return std::pair(d[u], u);
+    });
+    parlay::for_each(parlay::group_by_key_ordered(u), [&](auto& dv) {
+      auto& [dd, vs] = dv;
+      buckets[dd].push_back(std::move(vs));
+    });
+  }
+  return rank_by(n, [&](std::size_t v) { return peeled[v]; });
+}
+
+// ORIENT: keep the arc u -> v iff rank[u] < rank[v] and both endpoints have
+// degree >= k-1 (as GBBS does), and relabel every vertex by its rank.
+// Out-neighbour lists come out sorted, and every out-neighbour of v has a
+// larger id than v.
+csr orient(const csr& g, long k, const parlay::sequence<vid>& rank) {
+  const std::size_t n = g.n;
   const std::uint64_t min_deg = static_cast<std::uint64_t>(k - 1);
   auto keep = [&](std::size_t u, vid v) {
     return rank[u] < rank[v] && g.degree(u) >= min_deg && g.degree(v) >= min_deg;
@@ -500,7 +566,9 @@ int main(int argc, char** argv) {
     graph_name = c.graph_file;
   }
   if (!c.write_graph.empty()) write_adjacency_graph(g, c.write_graph);
-  const csr dg = orient_by_degree(g, c.k);
+  std::size_t degeneracy = 0;
+  const bool kcore = c.order == "kcore";
+  const csr dg = orient(g, c.k, kcore ? kcore_rank(g, degeneracy) : degree_rank(g));
   std::size_t max_out = 0;
   for (std::size_t v = 0; v < dg.n; v++) max_out = std::max(max_out, dg.degree(v));
   const double prep_ms = prep.ms();
@@ -541,25 +609,30 @@ int main(int argc, char** argv) {
 
   const char* id = c.id64 ? "i64" : "u32";
   const char* join = c.join_wait ? "wait" : "steal";
+  // The degeneracy comes out of the k-core peel, so it is only known (and
+  // null otherwise) under --order kcore.
+  const std::string degeneracy_str = kcore ? std::to_string(degeneracy) : "null";
   if (c.json) {
     std::printf("{\"example\":\"par-clique\",\"graph\":%s,\"n\":%zu,\"m\":%zu,"
-                "\"m_oriented\":%zu,\"max_out_degree\":%zu,\"k\":%ld,"
+                "\"m_oriented\":%zu,\"max_out_degree\":%zu,\"degeneracy\":%s,\"k\":%ld,"
                 "\"variant\":\"%s\",\"T\":\"%s\",\"order\":\"%s\",\"early_base\":%s,"
                 "\"prune\":%s,\"id\":\"%s\",\"grain\":%zu,\"join\":\"%s\",\"charge_graph\":%s,"
                 "\"footprint_tracked\":%s,"
                 "\"threads\":%lld,\"value\":\"%llu\",\"prep_ms\":%.3f,",
                 json_string(graph_name).c_str(), g.n, g.adj.size() / 2, dg.adj.size(),
-                max_out, c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
-                c.early_base ? "true" : "false", c.prune ? "true" : "false", id, c.grain,
-                join, c.charge_graph ? "true" : "false", c.footprint ? "true" : "false",
-                m.threads,
+                max_out, degeneracy_str.c_str(), c.k, c.variant.c_str(), c.t_mode.c_str(),
+                c.order.c_str(), c.early_base ? "true" : "false", c.prune ? "true" : "false",
+                id, c.grain, join, c.charge_graph ? "true" : "false",
+                c.footprint ? "true" : "false", m.threads,
                 static_cast<unsigned long long>(value), prep_ms);
     splang_bench::print_measures_json(m, ms);
     std::printf("}\n");
   }
   else {
-    std::printf("graph %s: n %zu, m %zu, oriented m %zu, max out-degree %zu\n",
+    std::printf("graph %s: n %zu, m %zu, oriented m %zu, max out-degree %zu",
                 graph_name.c_str(), g.n, g.adj.size() / 2, dg.adj.size(), max_out);
+    if (kcore) std::printf(", degeneracy %zu", degeneracy);
+    std::printf("\n");
     std::printf("k %ld, variant %s, T %s, order %s, early-base %s, prune %s, id %s, grain %zu, "
                 "join %s, charge-graph %s\n",
                 c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
