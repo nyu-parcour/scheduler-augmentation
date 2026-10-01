@@ -23,10 +23,19 @@ strassen for V1 alone, against the first worker count. A warning says so.
 
 par-clique has no splang counterpart, so it gets V1 and V3 only. V1 is checked
 across worker counts and across repeated runs at each count, and covers the
-count as well as the measures. V3 relies on the busy-leaves property, which
-parlay's default join (steal while waiting) does not preserve: it is a hard
-check under --join wait, and under --join steal violations are reported but do
-not fail.
+count as well as the measures. V3 checks both bounds, and relies on the
+busy-leaves property, which parlay's default join (steal while waiting) does
+not preserve: it is a hard check under --join wait, and under --join steal
+violations are reported but do not fail. Every run must also have
+R1(LR) <= R* <= Rinf, and at P = 1 a footprint of exactly R1(LR).
+
+Each par-clique ablation is also checked against the same case without it, on
+the schedule-independent measures. Every ablation keeps the count. The
+charging ablations do the same computation and only charge more: --T all adds
+exactly the top-level T (8n + 8 bytes) and --charge-graph exactly the graph
+(8n + 4 m_oriented + 24 bytes) to R1(LR), R*, Rinf and S, leaving delta and
+R1star_partial alone, and --T none never charges more than --T inner. Under
+--order kcore the max out-degree is at most the degeneracy.
 
 Usage:  python3 compare.py [--splang PATH] [--threads 1,2,8] [--quick]
                            [--clique-threads 1,2,10] [--repeats N]
@@ -69,18 +78,35 @@ QUICK = {
 # join policies. The graphs are par-clique's built-in seeded RMAT, so no files
 # are needed.
 CLIQUE_JOINS = ("steal", "wait")
-CLIQUE_FIELDS = ("value", "delta", "r1", "rinf", "r1_lr")
+CLIQUE_FIELDS = ("value", "delta", "r1", "rinf", "r1_lr", "s", "r1star_partial",
+                 "m_oriented", "max_out_degree")
+ALL_ABLATIONS = ["--variant", "induced", "--T", "all", "--charge-graph", "on",
+                 "--order", "kcore"]
 CLIQUE_CASES = [
     (["--rmat", "256,4000,1"], 4, []),
     (["--rmat", "256,4000,1"], 4, ["--prune", "on"]),
     (["--rmat", "256,4000,1"], 4, ["--id", "i64"]),
     (["--rmat", "256,4000,1"], 4, ["--early-base", "off"]),
     (["--rmat", "256,4000,1"], 4, ["--grain", "4"]),
+    (["--rmat", "256,4000,1"], 4, ["--T", "none"]),
+    (["--rmat", "256,4000,1"], 4, ["--T", "all"]),
+    (["--rmat", "256,4000,1"], 4, ["--charge-graph", "on"]),
+    (["--rmat", "256,4000,1"], 4, ["--order", "kcore"]),
+    (["--rmat", "256,4000,1"], 4, ["--variant", "induced"]),
+    (["--rmat", "256,4000,1"], 4, ALL_ABLATIONS),
     (["--rmat", "1024,20000,2"], 5, []),
+    (["--rmat", "1024,20000,2"], 5, ["--variant", "induced"]),
     (["--rmat", "4096,60000,3"], 4, []),
     (["--rmat", "4096,60000,3"], 6, []),
+    (["--rmat", "4096,60000,3"], 6, ["--variant", "induced"]),
+    (["--rmat", "4096,60000,3"], 6, ["--order", "kcore"]),
 ]
-CLIQUE_QUICK = CLIQUE_CASES[:1] + CLIQUE_CASES[5:6]
+CLIQUE_QUICK = [CLIQUE_CASES[0], CLIQUE_CASES[10], CLIQUE_CASES[11]]
+
+# The measures, in bytes, that the ablation checks compare; the first four are
+# the ones a charging ablation shifts.
+SHIFTED = ("s1_bytes", "s1star_bytes", "sinf_bytes", "s_bytes")
+MEASURE_BYTES = SHIFTED + ("r1star_partial_bytes", "gross_bytes")
 
 
 def run_json(argv, env=None):
@@ -112,16 +138,77 @@ def clique_run(graph, k, flags, threads):
     return run_json(argv, env=env)
 
 
+def with_flag(flags, flag, value):
+    """flags with flag's value set to value, or with flag removed if None."""
+    out, i = [], 0
+    while i < len(flags):
+        if flags[i] == flag:
+            i += 2
+        else:
+            out.append(flags[i])
+            i += 1
+    return out + ([flag, value] if value is not None else [])
+
+
+def flag_value(flags, flag):
+    return flags[flags.index(flag) + 1] if flag in flags else None
+
+
+def check_ablations(flags, run):
+    """The schedule-independent checks of each ablation in flags against the
+    same case without it. run(flags) gives one run of the case with those
+    flags. Returns [(baseline flags, what is checked, problems)]."""
+    got = run(flags)
+    results = []
+
+    def against(base_flags, what, check):
+        base = run(base_flags)
+        problems = [] if got["value"] == base["value"] else [
+            "value %s want %s" % (got["value"], base["value"])]
+        results.append((base_flags, what, problems + check(base)))
+
+    def shifted_by(extra):
+        def check(base):
+            want = {f: base[f] + (extra if f in SHIFTED else 0) for f in MEASURE_BYTES}
+            return ["%s %+d want %+d" % (f, got[f] - base[f], want[f] - base[f])
+                    for f in MEASURE_BYTES if got[f] != want[f]]
+        return check
+
+    def at_most(base):
+        return ["%s %d > %d" % (f, got[f], base[f]) for f in MEASURE_BYTES if got[f] > base[f]]
+
+    def same_count(base):
+        return []
+
+    if flag_value(flags, "--T") == "all":
+        against(with_flag(flags, "--T", "inner"), "+8n+8 B on R1(LR),R*,Rinf,S",
+                shifted_by(8 * got["n"] + 8))
+    if flag_value(flags, "--T") == "none":
+        against(with_flag(flags, "--T", "inner"), "no measure above it", at_most)
+    if flag_value(flags, "--charge-graph") == "on":
+        against(with_flag(flags, "--charge-graph", None), "+8n+4m'+24 B on R1(LR),R*,Rinf,S",
+                shifted_by(8 * got["n"] + 4 * got["m_oriented"] + 24))
+    if flag_value(flags, "--order") == "kcore":
+        against(with_flag(flags, "--order", None), "same count; D <= degeneracy",
+                lambda base: [] if got["max_out_degree"] <= got["degeneracy"] else [
+                    "D %d > degeneracy %d" % (got["max_out_degree"], got["degeneracy"])])
+    if flag_value(flags, "--variant") == "induced":
+        against(with_flag(flags, "--variant", None), "same count", same_count)
+    return results
+
+
 def check_par_clique(cases, threads, repeats):
-    """V1 and V3 for par-clique. Returns the number of failures."""
+    """V1 and V3 for par-clique, and the ablation checks. Returns the number
+    of failures."""
+    names = [" ".join(graph[1:] + ["k=%d" % k] + flags) for graph, k, flags in cases]
+    width = max(len(n) for n in names + ["par-clique case"])
     print()
-    print("%-34s %6s %7s %10s %8s %12s %9s   %s" %
-          ("par-clique case", "join", "threads", "value", "R1", "Rinf",
-           "fp/P*R1", "status"))
+    print("%-*s %6s %7s %10s %8s %12s %9s %9s   %s" %
+          (width, "par-clique case", "join", "threads", "value", "R1", "Rinf",
+           "fp/P*R1", "fp/S+PR1p", "status"))
     failures = 0
-    steal_violations = steal_runs = 0
-    for graph, k, flags in cases:
-        name = " ".join(graph[1:] + ["k=%d" % k] + flags)
+    steal_over = steal_over_partial = steal_runs = 0
+    for name, (graph, k, flags) in zip(names, cases):
         for join in CLIQUE_JOINS:
             ref = None
             for t in threads:
@@ -130,30 +217,68 @@ def check_par_clique(cases, threads, repeats):
                 if ref is None:
                     ref = runs[0]
                 moved = sorted({f for r in runs for f in CLIQUE_FIELDS if r[f] != ref[f]})
+                unordered = [r for r in runs
+                             if not r["s1_bytes"] <= r["s1star_bytes"] <= r["sinf_bytes"]]
+                serial = [r for r in runs
+                          if r["threads"] == 1 and r["footprint_bytes"] != r["s1_bytes"]]
                 over = [r for r in runs if not r["within_bound"]]
+                over_partial = [r for r in runs
+                                if r["partial_applies"] and not r["within_partial_bound"]]
                 worst = max(r["footprint_bytes"] / (r["threads"] * r["s1star_bytes"])
                             for r in runs)
+                worst_partial = max(r["footprint_bytes"] /
+                                    (r["s_bytes"] + r["threads"] * r["r1star_partial_bytes"])
+                                    for r in runs)
+                exceeded = "%d/%d over P*R1, %d/%d over S+P*R1p" % (
+                    len(over), len(runs), len(over_partial), len(runs))
                 if moved:
                     failures += 1
                     detail = "FAIL V1 " + " ".join(
                         "%s=%s want %s" % (f, next(r[f] for r in runs if r[f] != ref[f]), ref[f])
                         for f in moved)
-                elif over and join == "wait":
+                elif unordered:
                     failures += 1
-                    detail = "FAIL V3 %d/%d runs exceed P*R1" % (len(over), len(runs))
-                elif over:
-                    detail = "ok (V3: %d/%d over, not enforced)" % (len(over), len(runs))
+                    detail = "FAIL R1(LR) <= R* <= Rinf does not hold"
+                elif serial:
+                    failures += 1
+                    detail = "FAIL footprint %d B != R1(LR) %d B at P = 1" % (
+                        serial[0]["footprint_bytes"], serial[0]["s1_bytes"])
+                elif (over or over_partial) and join == "wait":
+                    failures += 1
+                    detail = "FAIL V3 " + exceeded
+                elif over or over_partial:
+                    detail = "ok (V3: %s, not enforced)" % exceeded
                 else:
                     detail = "ok"
                 if join == "steal":
-                    steal_violations += len(over)
+                    steal_over += len(over)
+                    steal_over_partial += len(over_partial)
                     steal_runs += len(runs)
-                print("%-34s %6s %7d %10s %8d %12d %9.2f   %s" %
-                      (name, join, t, ref["value"], ref["r1"], ref["rinf"], worst, detail))
+                print("%-*s %6s %7d %10s %8d %12d %9.2f %9.2f   %s" %
+                      (width, name, join, t, ref["value"], ref["r1"], ref["rinf"], worst,
+                       worst_partial, detail))
     print()
     print("par-clique: V1 over %s workers x %d repeats; --join steal exceeded P*R1 in "
-          "%d/%d runs" % (",".join(str(t) for t in threads), repeats,
-                          steal_violations, steal_runs))
+          "%d/%d runs and S+P*R1star_partial in %d/%d" % (
+              ",".join(str(t) for t in threads), repeats, steal_over, steal_runs,
+              steal_over_partial, steal_runs))
+
+    print()
+    print("%-*s   %-*s   %s" % (width, "par-clique ablation", width, "against", "check"))
+    for name, (graph, k, flags) in zip(names, cases):
+        cache = {}
+
+        def run(fl, graph=graph, k=k, cache=cache):
+            key = tuple(fl)
+            if key not in cache:
+                cache[key] = clique_run(graph, k, fl, 1)
+            return cache[key]
+
+        for base_flags, what, problems in check_ablations(flags, run):
+            failures += bool(problems)
+            base = " ".join(graph[1:] + ["k=%d" % k] + base_flags)
+            print("%-*s   %-*s   %s: %s" % (width, name, width, base, what,
+                                            "FAIL " + "; ".join(problems) if problems else "ok"))
     return failures
 
 
