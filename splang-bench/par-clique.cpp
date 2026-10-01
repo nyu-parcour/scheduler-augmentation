@@ -515,9 +515,9 @@ int main(int argc, char** argv) {
                 c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
                 c.early_base ? "on" : "off", c.prune ? "on" : "off", id, c.grain, join);
     std::printf("threads %lld\n", m.threads);
-    std::printf("value  %llu\n", static_cast<unsigned long long>(value));
+    std::printf("%-22s %llu\n", "value", static_cast<unsigned long long>(value));
     splang_bench::print_measures_text(m, ms);
-    std::printf("prep   %.0fms\n", prep_ms);
+    std::printf("%-22s %.0fms\n", "prep", prep_ms);
   }
   return 0;
 }

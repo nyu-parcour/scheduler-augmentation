@@ -1,12 +1,15 @@
 // Strassen matrix multiply, measured with scheduler augmentation.
 //
-// Unlike allocfree and nqueens this is not a port of a splang program, so
-// there is no reference to compare against: it is an ordinary ParlayLib
-// computation whose space is being measured. What makes it interesting is the
-// shape of the recursion. Each level copies out eight quadrant matrices and
-// holds them across a seven-way fork, so R-infinity grows by 7/4 per level
-// while R1 only pays for one root-to-leaf path.
+// splang's `strassenDemo` (Splang/Examples/Strassen.lean) follows this
+// implementation allocation for allocation, so compare.py checks the two
+// against each other like the other ports. The operand values differ (random
+// doubles here, fixed integer matrices there), which the space measures do not
+// see. What makes it interesting is the shape of the recursion. Each level
+// copies out eight quadrant matrices and holds them across a seven-way fork,
+// so R-infinity grows by 7/4 per level while R1 only pays for one root-to-leaf
+// path.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -42,17 +45,27 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  // Built outside the augmented region: the inputs are given, not allocated by
-  // the computation, so they are not part of what is being measured.
+  // The operand values are generated outside the augmented region, and kept
+  // there for the check below.
   parlay::random_generator gen(0);
   std::uniform_real_distribution<REAL> dis(0.0, 1.0);
   auto A = parlay::tabulate(n * n, [&](long i) { auto r = gen[i]; return dis(r); });
   auto B = parlay::tabulate(n * n, [&](long i) { auto r = gen[n * n + i]; return dis(r); });
 
+  // As in splang's strassenDemo, the computation allocates its own copies of
+  // the operands, multiplies, and frees them, so the inputs are measured: they
+  // are live across the whole recursion and land in S. The copies are serial
+  // so that they add no forks.
   matrix C;
   parlay::space_reset_counters();
   splang_bench::timer t;
-  auto v = parlay::augment(parlay::space_vertex{}, [&]() { C = strassen(A, B, n); });
+  auto v = parlay::augment(parlay::space_vertex{}, [&]() {
+    matrix a = matrix::uninitialized(n * n);
+    std::copy(A.begin(), A.end(), a.begin());
+    matrix b = matrix::uninitialized(n * n);
+    std::copy(B.begin(), B.end(), b.begin());
+    C = strassen(a, b, n);
+  });
   const double ms = t.ms();
 
   // Freivalds-style check: compare A (B r) with C r for a random vector r.
