@@ -16,8 +16,11 @@
 //
 // What is charged is exactly what the pseudocode allocates: each parfor
 // iteration's I' (a space_sequence of |I n N+(v)| ids, freed once the
-// recursion below it has joined), and each T below the top level. Loading and
-// orienting the graph happen before the measured region and are not charged.
+// recursion below it has joined), and each T below the top level. --T is the
+// ablation of where T is materialized: none sums every level as a reduce over
+// a delayed sequence, all also materializes the n-sized top-level T. Loading
+// and orienting the graph happen before the measured region and are not
+// charged.
 //
 // The fork tree follows the other ports here (allocfree, nqueens): every
 // parfor and REDUCE-ADD is a binary par_do split at the midpoint down to single
@@ -88,7 +91,8 @@ struct config {
       "  --rmat N,M,SEED       RMAT graph on 2^round(log2 N) vertices from M edge samples\n"
       "  --k K                 clique size, K >= 4\n"
       "  --variant faithful    Algorithm 1 as written (default)\n"
-      "  --T inner             materialize T below the top level only (default)\n"
+      "  --T none|inner|all    where T is materialized: nowhere, below the top level\n"
+      "                        (default), or at every level including the n-sized top\n"
       "  --order degree        degree ordering (default)\n"
       "  --early-base on|off   at l = 2 count |I n N+(v)| without building I' (default on)\n"
       "  --prune off|on        skip I' when |I'| < l-1 (default off)\n"
@@ -158,8 +162,8 @@ config parse(int argc, char** argv) {
     std::fprintf(stderr, "error: %s %s is not implemented yet\n", what, v.c_str());
     std::exit(2);
   };
+  if (c.t_mode != "none" && c.t_mode != "inner" && c.t_mode != "all") usage(argv[0]);
   if (c.variant != "faithful") not_yet("--variant", c.variant);
-  if (c.t_mode != "inner") not_yet("--T", c.t_mode);
   if (c.order != "degree") not_yet("--order", c.order);
   return c;
 }
@@ -355,14 +359,15 @@ template <typename Id>
 class arb_count {
  public:
   arb_count(const csr& dg, const config& c)
-      : dg_(dg), c_(c), fk_{c.grain, c.join_wait} {}
+      : dg_(dg), c_(c), fk_{c.grain, c.join_wait},
+        t_top_(c.t_mode == "all"), t_inner_(c.t_mode != "none") {}
 
-  // REC-COUNT-CLIQUES(DG, V, k). I = V is implicit, and under --T inner the
+  // REC-COUNT-CLIQUES(DG, V, k). I = V is implicit. Unless --T all, the
   // top-level T is not materialized: its sum is a reduce over the delayed
   // sequence of per-vertex counts.
   count_t run() const {
     const std::size_t k = static_cast<std::size_t>(c_.k);
-    return parsum(0, dg_.n, fk_, [&](std::size_t v) -> count_t {
+    auto vertex = [&](std::size_t v) -> count_t {
       // INTERSECT(V, N+(v)) = N+(v), copied into a fresh I' like every other
       // iteration's.
       const std::size_t d = dg_.degree(v);
@@ -372,20 +377,30 @@ class arb_count {
       for (std::size_t j = 0; j < d; j++) next[j] = static_cast<Id>(nb[j]);
       return rec(next.data(), d, k - 1);
       // next is freed here, after the recursion below it has joined.
-    });
+    };
+    return sum(dg_.n, t_top_, vertex);
   }
 
  private:
   using id_seq = parlay::space_sequence<Id>;
   using count_seq = parlay::space_sequence<count_t>;
 
+  // The sum of f(i) over [0, n): parfor into a materialized T, then
+  // REDUCE-ADD(T), or, without T, one reduce over the delayed sequence of f.
+  // The two have the same fork tree, and the same allocations below it.
+  template <typename F>
+  count_t sum(std::size_t n, bool materialize, const F& f) const {
+    if (!materialize) return parsum(0, n, fk_, f);
+    auto T = count_seq::uninitialized(n);
+    parfor(0, n, fk_, [&](std::size_t i) { T[i] = f(i); });
+    return parsum(0, n, fk_, [&](std::size_t i) { return T[i]; });
+    // T is freed here, after the reduce.
+  }
+
   // REC-COUNT-CLIQUES(DG, I, l) below the top level. I is sorted ascending.
   count_t rec(const Id* I, std::size_t n, std::size_t l) const {
     if (l == 1) return n;
-    auto T = count_seq::uninitialized(n);
-    parfor(0, n, fk_, [&](std::size_t i) { T[i] = iteration(I, n, i, l); });
-    return parsum(0, n, fk_, [&](std::size_t i) { return T[i]; });
-    // T is freed here, after the reduce.
+    return sum(n, t_inner_, [&](std::size_t i) { return iteration(I, n, i, l); });
   }
 
   // One parfor iteration: v = I[i]; I' = INTERSECT(I, N+(v)); recurse on I'.
@@ -433,6 +448,8 @@ class arb_count {
   const csr& dg_;
   const config& c_;
   const forks fk_;
+  // Whether T is materialized at the top level, and below it (--T).
+  const bool t_top_, t_inner_;
 };
 
 // ---------------------------------------------------------------------------
@@ -485,8 +502,10 @@ int main(int argc, char** argv) {
   });
   const double ms = t.ms();
 
-  // Every vertex allocates its top-level I' unless pruning skips them all.
-  const bool expect_alloc = dg.n > 0 && (!c.prune || max_out >= static_cast<std::size_t>(c.k - 1));
+  // Every vertex allocates its top-level I' unless pruning skips them all;
+  // --T all allocates the top-level T regardless.
+  const bool expect_alloc =
+      dg.n > 0 && (c.t_mode == "all" || !c.prune || max_out >= static_cast<std::size_t>(c.k - 1));
   const splang_bench::measures m = splang_bench::collect(vtx, expect_alloc);
 
   const char* id = c.id64 ? "i64" : "u32";
