@@ -23,6 +23,11 @@
 // charged; --charge-graph is the ablation that copies the oriented graph into
 // the region and counts on the copy.
 //
+// --variant induced replaces everything below the top level with GBBS's
+// practical scheme: one workspace per top-level vertex, holding the subgraph
+// induced on its out-neighbourhood (out-degree squared), with the recursion
+// run serially inside it.
+//
 // The fork tree follows the other ports here (allocfree, nqueens): every
 // parfor and REDUCE-ADD is a binary par_do split at the midpoint down to single
 // iterations, so the graph being measured is the pseudocode's. --grain G is an
@@ -47,6 +52,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include <parlay/parallel.h>
@@ -92,6 +98,8 @@ struct config {
       "  --rmat N,M,SEED       RMAT graph on 2^round(log2 N) vertices from M edge samples\n"
       "  --k K                 clique size, K >= 4\n"
       "  --variant faithful    Algorithm 1 as written (default)\n"
+      "  --variant induced     GBBS -space 6 --saveSpace: per top-level vertex, a workspace\n"
+      "                        holding the subgraph induced on N+(v), recursed serially\n"
       "  --T none|inner|all    where T is materialized: nowhere, below the top level\n"
       "                        (default), or at every level including the n-sized top\n"
       "  --order degree|kcore  rank by (degree, id) (default), or by k-core peel\n"
@@ -161,14 +169,15 @@ config parse(int argc, char** argv) {
   if (c.graph_file.empty() == !c.rmat) usage(argv[0]);
   if (c.k < 4) usage(argv[0]);
   if (c.grain < 1) usage(argv[0]);
-  // The remaining variants and ablations are PLAN.md milestone M3.
-  auto not_yet = [](const char* what, const std::string& v) {
-    std::fprintf(stderr, "error: %s %s is not implemented yet\n", what, v.c_str());
-    std::exit(2);
-  };
+  if (c.variant != "faithful" && c.variant != "induced") usage(argv[0]);
   if (c.t_mode != "none" && c.t_mode != "inner" && c.t_mode != "all") usage(argv[0]);
   if (c.order != "degree" && c.order != "kcore") usage(argv[0]);
-  if (c.variant != "faithful") not_yet("--variant", c.variant);
+  // --variant induced labels each vertex with a recursion level, up to k-2,
+  // in a byte under --id u32.
+  if (c.variant == "induced" && !c.id64 && c.k - 2 > 255) {
+    std::fprintf(stderr, "error: --variant induced --id u32 needs k <= 257\n");
+    std::exit(2);
+  }
   return c;
 }
 
@@ -440,31 +449,38 @@ template <typename Id>
 class arb_count {
  public:
   arb_count(const graph_view& dg, const config& c)
-      : dg_(dg), c_(c), fk_{c.grain, c.join_wait},
+      : dg_(dg), c_(c), fk_{c.grain, c.join_wait}, k_(static_cast<std::size_t>(c.k)),
+        induced_(c.variant == "induced"),
         t_top_(c.t_mode == "all"), t_inner_(c.t_mode != "none") {}
 
   // REC-COUNT-CLIQUES(DG, V, k). I = V is implicit. Unless --T all, the
   // top-level T is not materialized: its sum is a reduce over the delayed
-  // sequence of per-vertex counts.
+  // sequence of per-vertex counts. Both variants share this top level.
   count_t run() const {
-    const std::size_t k = static_cast<std::size_t>(c_.k);
-    auto vertex = [&](std::size_t v) -> count_t {
-      // INTERSECT(V, N+(v)) = N+(v), copied into a fresh I' like every other
-      // iteration's.
+    return sum(dg_.n, t_top_, [&](std::size_t v) -> count_t {
       const std::size_t d = dg_.degree(v);
-      if (c_.prune && d < k - 1) return 0;
-      auto next = id_seq::uninitialized(d);
-      const vid* nb = dg_.neighbors(v);
-      for (std::size_t j = 0; j < d; j++) next[j] = static_cast<Id>(nb[j]);
-      return rec(next.data(), d, k - 1);
-      // next is freed here, after the recursion below it has joined.
-    };
-    return sum(dg_.n, t_top_, vertex);
+      if (c_.prune && d < k_ - 1) return 0;
+      return induced_ ? induced_vertex(v, d) : faithful_vertex(v, d);
+    });
   }
 
  private:
   using id_seq = parlay::space_sequence<Id>;
   using count_seq = parlay::space_sequence<count_t>;
+  // --variant induced's labels are bytes, as GBBS's are, except under --id
+  // i64, where every buffer is in whole cells.
+  using label_t = std::conditional_t<std::is_same_v<Id, vid>, std::uint8_t, Id>;
+  using label_seq = parlay::space_sequence<label_t>;
+
+  // A top-level iteration of Algorithm 1: INTERSECT(V, N+(v)) = N+(v), copied
+  // into a fresh I' like every other iteration's.
+  count_t faithful_vertex(std::size_t v, std::size_t d) const {
+    auto next = id_seq::uninitialized(d);
+    const vid* nb = dg_.neighbors(v);
+    for (std::size_t j = 0; j < d; j++) next[j] = static_cast<Id>(nb[j]);
+    return rec(next.data(), d, k_ - 1);
+    // next is freed here, after the recursion below it has joined.
+  }
 
   // The sum of f(i) over [0, n): parfor into a materialized T, then
   // REDUCE-ADD(T), or, without T, one reduce over the delayed sequence of f.
@@ -526,9 +542,101 @@ class arb_count {
     }
   }
 
+  // --variant induced: GBBS's -space 6 --saveSpace (induced_split.h, with
+  // HybridSpace_lw from intersect.h and KCliqueDir_fast_hybrid_rec from
+  // induced_hybrid.h at recursive_level 0). Each top-level vertex v allocates
+  // a workspace sized by its out-degree d, builds the subgraph induced on
+  // N+(v) in it, and runs the rest of the recursion serially inside it,
+  // allocating nothing more. GBBS's parallel_for and reduce in the setup are
+  // serial loops here, so nothing below the top level forks.
+  struct workspace {
+    std::size_t d;
+    Id* induced;      // the I of recursion level j, at [j*d, j*d + num_induced[j])
+    Id* degs;         // degs[x]: the out-degree of local vertex x within N+(v)
+    label_t* labels;  // labels[x]: the deepest level whose I holds x
+    Id* edges;        // the out-neighbours of x within N+(v), at [x*d, x*d + degs[x])
+    Id* num_induced;  // |I| at each level
+  };
+
+  count_t induced_vertex(std::size_t v, std::size_t d) const {
+    // HybridSpace_lw::alloc(d, k-1, ...): GBBS's five mallocs, in its order,
+    // each a space_sequence with its own capacity word. The level stack has
+    // k-1 levels, as GBBS allocates it, though the recursion writes at most
+    // k-2 of them. Under --prune off a vertex with d = 0 still allocates, as
+    // its I' does in the faithful variant.
+    auto induced = id_seq::uninitialized((k_ - 1) * d);
+    auto degs = id_seq::uninitialized(d);
+    auto labels = label_seq::uninitialized(d);
+    auto edges = id_seq::uninitialized(d * d);
+    auto num_induced = id_seq::uninitialized(k_ - 1);
+    for (std::size_t x = 0; x < d; x++) labels[x] = 0;
+
+    // HybridSpace_lw::setup_intersect: relabel N+(v) as 0 .. d-1, and build
+    // row x of the induced subgraph by merging N+(v) with N+(N+(v)[x]).
+    const vid* nv = dg_.neighbors(v);
+    for (std::size_t x = 0; x < d; x++) {
+      const vid* nu = dg_.neighbors(nv[x]);
+      const std::size_t du = dg_.degree(nv[x]);
+      std::size_t i = 0, j = 0, e = 0;
+      while (i < d && j < du) {
+        if (nv[i] < nu[j]) i++;
+        else if (nu[j] < nv[i]) j++;
+        else {
+          edges[x * d + e++] = static_cast<Id>(i);
+          i++, j++;
+        }
+      }
+      degs[x] = static_cast<Id>(e);
+    }
+    for (std::size_t x = 0; x < d; x++) induced[x] = static_cast<Id>(x);
+    num_induced[0] = static_cast<Id>(d);
+
+    const workspace w{d, induced.data(), degs.data(), labels.data(), edges.data(),
+                      num_induced.data()};
+    return induced_rec(w, 1, k_ - 1);
+    // The workspace is freed here, after the recursion.
+  }
+
+  // REC-COUNT-CLIQUES(DG, I, l) inside a workspace, serially, where I is level
+  // lvl-1 of the stack. Its members are labelled lvl while it is being
+  // processed, so I n N+(x) is row x of the induced subgraph filtered by
+  // label. --early-base and --prune act as in the faithful variant; GBBS
+  // always does both. The sum goes into a local, so there is no T to
+  // materialize, and --T inner is the same as --T none.
+  count_t induced_rec(const workspace& w, std::size_t lvl, std::size_t l) const {
+    const std::size_t n = static_cast<std::size_t>(w.num_induced[lvl - 1]);
+    if (l == 1) return n;
+    const Id* I = w.induced + w.d * (lvl - 1);
+    auto in_I = [&](Id x) { return static_cast<std::size_t>(w.labels[x]) == lvl; };
+    for (std::size_t i = 0; i < n; i++) w.labels[I[i]] = static_cast<label_t>(lvl);
+
+    count_t total = 0;
+    for (std::size_t i = 0; i < n; i++) {
+      const Id* row = w.edges + w.d * static_cast<std::size_t>(I[i]);
+      const std::size_t deg = static_cast<std::size_t>(w.degs[I[i]]);
+      if (l == 2 && c_.early_base) {
+        for (std::size_t j = 0; j < deg; j++) total += in_I(row[j]);
+        continue;
+      }
+      Id* next = w.induced + w.d * lvl;
+      std::size_t size = 0;
+      for (std::size_t j = 0; j < deg; j++) {
+        if (in_I(row[j])) next[size++] = row[j];
+      }
+      w.num_induced[lvl] = static_cast<Id>(size);
+      if (c_.prune && size < l - 1) continue;
+      total += induced_rec(w, lvl + 1, l - 1);
+    }
+
+    for (std::size_t i = 0; i < n; i++) w.labels[I[i]] = static_cast<label_t>(lvl - 1);
+    return total;
+  }
+
   const graph_view dg_;
   const config& c_;
   const forks fk_;
+  const std::size_t k_;
+  const bool induced_;
   // Whether T is materialized at the top level, and below it (--T).
   const bool t_top_, t_inner_;
 };
