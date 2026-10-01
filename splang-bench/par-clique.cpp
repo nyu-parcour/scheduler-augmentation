@@ -20,7 +20,8 @@
 // ablation of where T is materialized: none sums every level as a reduce over
 // a delayed sequence, all also materializes the n-sized top-level T. Loading
 // and orienting the graph happen before the measured region and are not
-// charged.
+// charged; --charge-graph is the ablation that copies the oriented graph into
+// the region and counts on the copy.
 //
 // The fork tree follows the other ports here (allocfree, nqueens): every
 // parfor and REDUCE-ADD is a binary par_do split at the midpoint down to single
@@ -99,6 +100,8 @@ struct config {
       "  --id u32|i64          element type of I' (default u32)\n"
       "  --grain G             serial block size of every parfor/reduce (default 1)\n"
       "  --join steal|wait     blocked joins steal other work (default) or spin\n"
+      "  --charge-graph off|on copy the oriented graph inside the measured region, so it is\n"
+      "                        charged (default off)\n"
       "  --footprint on|off    track the global footprint (default on); off for timing runs\n"
       "  --write-graph FILE    also write the symmetrized input as AdjacencyGraph text\n"
       "  --json                one JSON line instead of text\n",
@@ -148,6 +151,7 @@ config parse(int argc, char** argv) {
       else if (s == "wait") c.join_wait = true;
       else usage(argv[0]);
     }
+    else if (std::strcmp(a, "--charge-graph") == 0) c.charge_graph = on_off(argv[0], next());
     else if (std::strcmp(a, "--footprint") == 0) c.footprint = on_off(argv[0], next());
     else if (std::strcmp(a, "--write-graph") == 0) c.write_graph = next();
     else if (std::strcmp(a, "--json") == 0) c.json = true;
@@ -180,6 +184,17 @@ struct csr {
 
   std::size_t degree(std::size_t v) const { return off[v + 1] - off[v]; }
   const vid* neighbors(std::size_t v) const { return adj.data() + off[v]; }
+};
+
+// The oriented graph as the measured computation reads it: the csr built
+// outside the region or, under --charge-graph, a charged copy of it.
+struct graph_view {
+  std::size_t n;
+  const std::uint64_t* off;
+  const vid* adj;
+
+  std::size_t degree(std::size_t v) const { return off[v + 1] - off[v]; }
+  const vid* neighbors(std::size_t v) const { return adj + off[v]; }
 };
 
 // A simple undirected graph from an arbitrary edge list: both directions of
@@ -358,7 +373,7 @@ count_t parsum(std::size_t lo, std::size_t hi, forks fk, const F& f) {
 template <typename Id>
 class arb_count {
  public:
-  arb_count(const csr& dg, const config& c)
+  arb_count(const graph_view& dg, const config& c)
       : dg_(dg), c_(c), fk_{c.grain, c.join_wait},
         t_top_(c.t_mode == "all"), t_inner_(c.t_mode != "none") {}
 
@@ -445,7 +460,7 @@ class arb_count {
     }
   }
 
-  const csr& dg_;
+  const graph_view dg_;
   const config& c_;
   const forks fk_;
   // Whether T is materialized at the top level, and below it (--T).
@@ -497,15 +512,31 @@ int main(int argc, char** argv) {
   parlay::space_track_footprint(c.footprint);
   parlay::space_reset_counters();
   splang_bench::timer t;
+  auto count = [&](const graph_view& view) {
+    return c.id64 ? arb_count<std::int64_t>(view, c).run() : arb_count<vid>(view, c).run();
+  };
   auto vtx = parlay::augment(parlay::space_vertex{}, [&]() {
-    value = c.id64 ? arb_count<std::int64_t>(dg, c).run() : arb_count<vid>(dg, c).run();
+    if (!c.charge_graph) {
+      value = count(graph_view{dg.n, dg.off.data(), dg.adj.data()});
+      return;
+    }
+    // --charge-graph: the computation allocates its own copy of the oriented
+    // graph, counts on it, and frees it, so the graph is measured: it is live
+    // across the whole count and lands in S. The copies are serial so that
+    // they add no forks.
+    auto off = parlay::space_sequence<std::uint64_t>::uninitialized(dg.n + 1);
+    std::copy(dg.off.begin(), dg.off.end(), off.begin());
+    auto adj = parlay::space_sequence<vid>::uninitialized(dg.adj.size());
+    std::copy(dg.adj.begin(), dg.adj.end(), adj.begin());
+    value = count(graph_view{dg.n, off.data(), adj.data()});
   });
   const double ms = t.ms();
 
   // Every vertex allocates its top-level I' unless pruning skips them all;
-  // --T all allocates the top-level T regardless.
+  // --T all and --charge-graph allocate regardless.
   const bool expect_alloc =
-      dg.n > 0 && (c.t_mode == "all" || !c.prune || max_out >= static_cast<std::size_t>(c.k - 1));
+      dg.n > 0 && (c.t_mode == "all" || c.charge_graph || !c.prune ||
+                   max_out >= static_cast<std::size_t>(c.k - 1));
   const splang_bench::measures m = splang_bench::collect(vtx, expect_alloc);
 
   const char* id = c.id64 ? "i64" : "u32";
@@ -530,9 +561,10 @@ int main(int argc, char** argv) {
     std::printf("graph %s: n %zu, m %zu, oriented m %zu, max out-degree %zu\n",
                 graph_name.c_str(), g.n, g.adj.size() / 2, dg.adj.size(), max_out);
     std::printf("k %ld, variant %s, T %s, order %s, early-base %s, prune %s, id %s, grain %zu, "
-                "join %s\n",
+                "join %s, charge-graph %s\n",
                 c.k, c.variant.c_str(), c.t_mode.c_str(), c.order.c_str(),
-                c.early_base ? "on" : "off", c.prune ? "on" : "off", id, c.grain, join);
+                c.early_base ? "on" : "off", c.prune ? "on" : "off", id, c.grain, join,
+                c.charge_graph ? "on" : "off");
     std::printf("threads %lld\n", m.threads);
     std::printf("%-22s %llu\n", "value", static_cast<unsigned long long>(value));
     splang_bench::print_measures_text(m, ms);
