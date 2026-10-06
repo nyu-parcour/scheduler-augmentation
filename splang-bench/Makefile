@@ -7,7 +7,7 @@ CXX      ?= g++
 CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread \
             -DPARLAY_DYNAMIC_VERTEX_CAPACITY=64
 
-BINS := allocfree nqueens strassen
+BINS := allocfree nqueens strassen karatsuba ann ann_prealloc
 
 all: $(BINS)
 
@@ -19,6 +19,12 @@ nqueens: nqueens.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 
 strassen: strassen.cpp strassen.h report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) strassen.cpp -o $@
+
+karatsuba: karatsuba.cpp karatsuba.h bigint_add.h report.h $(INCLUDE)/parlay/vertices/space_alloc.h
+	$(CXX) $(CXXFLAGS) karatsuba.cpp -o $@
+
+ann: ann.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
+	$(CXX) $(CXXFLAGS) ann.cpp -o $@
 
 check: $(BINS)
 	python3 compare.py

@@ -82,7 +82,8 @@ inline void report(const char* example, const options& o, const char* value,
   const long long partial_min_prefix = static_cast<long long>(v.spine_par_min / cell_bytes);
   const bool partial_applies = v.spine_par_min >= 0;
   const long long partial_bound = s + threads * r1star_partial;
-  assert(footprint <= partial_bound);
+  // Without augmentation S and R1star_partial are never recorded, so the bound is 0.
+  if constexpr (parlay::augmentation_enabled) assert(footprint <= partial_bound);
   std::printf("%lld,%lld,%lld,%lld,%lld,%lld\n", static_cast<long long>(o.size), threads, footprint, s, partial_bound, rinf);
 
   // // The JSON also carries delta, r1 and the P*R1star bound, which compare.py
