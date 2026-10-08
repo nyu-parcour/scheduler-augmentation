@@ -28,7 +28,7 @@ the `PARLAY_NUM_THREADS` pattern (`parallel.h:177-183`):
 | Variable | Meaning |
 |---|---|
 | `PARLAY_DETERMINISTIC=1` | Turns deterministic mode on. Off when unset. |
-| `PARLAY_DETERMINISTIC_GRANULARITY=<n>` | Leaf size used for `parallel_for` calls that pass granularity 0. Doesn't depend on P. |
+| `PARLAY_DETERMINISTIC_GRANULARITY=<n>` | Leaf size used for `parallel_for` calls that pass granularity 0. Doesn't depend on P. Defaults to 1. |
 
 A program's `--deterministic true|false` command-line option sets
 `PARLAY_DETERMINISTIC` before it first calls parlay.
@@ -69,11 +69,28 @@ because it defines its own `operator=` and its default constructor zeroes the
 members. Measured with Apple clang 21 / libc++: `std::pair<uint32_t,float>`
 gives `trivially_copyable=0, trivially_default=0`.
 
+*In `ann`* (branch `r1star`, `splang-bench/ann.cpp:54`): the element type is
+`pid = std::pair<int, float>`, so every `pid` sequence in `beam_search` takes
+the timing path at any length:
+
+- `unvisited_frontier` and `new_frontier`: default construction;
+- the `frontier` rebuild on every loop iteration: range construction;
+- `sorted_candidates` and `visited_copy`: copy construction.
+
+The comment in `include/parlay/vertices/space_alloc.h` on `r1star` says
+`space_sequence` forks only above `1 + 8192/sizeof(T)` elements. That's only
+true for trivial types, so it doesn't hold for `pid`. The fix belongs on
+`r1star`, not here.
+
+`visited.insert` is not a source. Parlay marks `std::pair` of trivial types as
+trivially relocatable (`type_traits.h:346`), so `insert` moves elements with
+`memcpy` in 1,024-element chunks with granularity 1. 288 elements never fork.
+
 *Measured:* a 288-element `sequence<std::pair<uint32_t,float>>` forked 0 times
-in 200 runs, because its iterations are too cheap to reach 1µs. The fork seen
-in `ann` hasn't been reproduced. It may come from slower iterations (page
-faults on first touch, preemption, an expensive constructor) or from a type
-other than `std::pair`. This needs the `ann` code (`space_alloc.h`) to settle.
+in 200 runs of the probe, because its iterations are too cheap to reach 1µs.
+In `ann` those constructions run inside a per-query `parallel_for` with all
+workers busy, which makes one slow early batch far more likely. That is the
+likely explanation for the observed fork; it has not been reproduced.
 
 **A3. Calls that always use the timing path, whatever the type.**
 - `sequence::from_function` and everything built on it (`tabulate`, `map`,
@@ -123,26 +140,36 @@ they are:
 | `scheduler.h:127-132` | Workers start stealing as soon as their thread starts, so OS thread startup decides what they take first. |
 | `scheduler.h:38-50, 308-350` | Elastic parallelism makes timeout and sleep decisions based on time. It is compiled off (`false` at line 39, although the comment at line 37 says the default is true). |
 
-### D. Fixed for a given P, but changes with P
+### D. Fixed for a given P, but changes with P (deferred)
 
-- The `parfor` leaf size term `n/(128·P)` (`scheduler.h:402`).
-- `internal/quicksort.h:231`, `internal/collect_reduce.h:53` and
-  `internal/counting_sort.h:125` pick block counts from `num_workers()`.
-- P comes from `PARLAY_NUM_THREADS`, or `hardware_concurrency()` if that is
-  unset (`parallel.h:177-183`).
+P comes from `PARLAY_NUM_THREADS`, or `hardware_concurrency()` if that is
+unset (`parallel.h:177-183`).
+
+| Place | How it depends on P | Reached from |
+|---|---|---|
+| `parfor` leaf size `n/(128·P)` (`scheduler.h:402`) | Leaf size | Every `parallel_for` with granularity 0. Removed in deterministic mode by change 3. |
+| `internal/collect_reduce.h:53-54` (`collect_reduce_few`) | About 4·P blocks | `reduce_by_index`, `histogram_by_index`, `remove_duplicate_integers`, `group_by_index` (`internal/group_by.h:246-313`), when n ≥ 8,192 and there are few buckets |
+| `internal/counting_sort.h:125,138` (`count_sort_`) | Only P = 1 vs P > 1: P = 1 runs serially | `counting_sort*`, `integer_sort`, `stable_integer_sort`, `random_shuffle`/`random_permutation` (`random.h:124`), and the hashed `reduce_by_key`, `group_by_key`, `histogram_by_key`, `remove_duplicates` (`internal/group_by.h:128-222`) |
+| `internal/quicksort.h:231` (`p_quicksort_`) | Cutoff `3n/P` | Nothing. `p_quicksort_` has no callers, so it's dead code. `parlay::sort` uses sample sort, which doesn't read P. |
+
+None of the `r1star` benchmarks reach the last three rows. `ann` uses
+`tabulate` and `parallel_for`, `strassen` uses `tabulate`, and `nqueens` and
+`allocfree` use only `par_do`. Deferred until a profiled benchmark uses one
+of them.
 
 *Measured:* not shown. In the `parallel_for` test the timing noise from A1
 drowned out the P term.
 
-### E. Outside the scheduler (not addressed)
+### E. Outside the scheduler (out of scope)
 
 - **Allocator.** `block_allocator` keeps one free list per OS thread
   (`internal/block_allocator.h:58`), and `pool_allocator` shares its
   large-size stacks between threads. The addresses returned, and when the
   allocator calls `::operator new`, depend on the schedule. That changes real
-  memory use (RSS) but not `space_vertex`, which counts requested bytes. This
-  repo has no allocator hook into the vertex, so how `ann`'s `space_alloc.h`
-  counts is unchecked.
+  memory use (RSS) only. `space_alloc.h` on `r1star` charges the requested
+  bytes (`n * sizeof(T)`) to both the vertex and the live/high-water
+  counters, so none of the profiling counters see allocator behavior.
+  Decision: leave `parlay::allocator` alone for now and revisit if needed.
 - **Checked and fine:** `hash_table.h` is the history-independent
   Shun–Blelloch table, so its result doesn't depend on insertion order.
   `random_generator` uses a fixed seed of 0. `write_min` on indices
@@ -158,6 +185,7 @@ Each one is meant to be a separate commit.
 - In the `scheduler` constructor, read `PARLAY_DETERMINISTIC` and
   `PARLAY_DETERMINISTIC_GRANULARITY` into two `const` members (for example
   `deterministic` and `deterministic_granularity`) and add public accessors.
+- `PARLAY_DETERMINISTIC_GRANULARITY` defaults to 1 when unset.
 - Reject a granularity of 0 or a non-number with a clear error.
 
 ### 2. Busy-wait at joins (fixes B1)
@@ -174,9 +202,17 @@ Each one is meant to be a separate commit.
 - `parfor` (`scheduler.h:398-406`): when `granularity == 0` and the flag is
   on, set `granularity = deterministic_granularity` and skip
   `get_granularity` and the `n/(128·P)` term entirely.
-- Explicit nonzero granularities are left alone. They are already
-  deterministic and P-independent (for example `copy_granularity` for
-  trivial types, and the granularity of 1 in `sequence_ops.h:175`).
+- Explicit nonzero granularities are left alone (decided). They are already
+  deterministic and P-independent, for example `copy_granularity` for trivial
+  types (1025 for 8-byte types), the granularity of 1 in `sequence_ops.h:175`,
+  or 2000 in `internal/quicksort.h:236`.
+- Granularity 0 includes the type-based ones that come out to 0 for
+  non-trivial types. With the default of 1, every `pid` sequence that
+  `ann`'s `beam_search` builds forks down to single elements; a 288-element
+  construction becomes about 287 forks. That is deterministic, and those
+  branches don't allocate, but it costs time and grows the fork tree well
+  beyond a normal run. Setting `PARLAY_DETERMINISTIC_GRANULARITY=1025` for
+  `ann` would match what trivial 8-byte types get.
 - Check: `fork_count pfor_default 100000` and `fork_count u64_tabulate 20000`
   each give a single value across runs, and the same value at
   P = 1, 2, 4 and 8.
@@ -188,19 +224,22 @@ Each one is meant to be a separate commit.
   based.
 - Fix the "Default: true" comment at `scheduler.h:37`.
 
-## Open questions
+## Decisions
 
-1. **Default granularity.** What should apply when `PARLAY_DETERMINISTIC=1`
-   is set but `PARLAY_DETERMINISTIC_GRANULARITY` is not: a default (1? 1024?)
-   or an error?
-2. **Explicit granularities.** Should the override also replace explicit
-   nonzero granularities, so one number controls the whole fork tree?
-3. **Group D.** Should `quicksort`, `collect_reduce` and `counting_sort` stop
-   depending on `num_workers()` in deterministic mode, so the fork tree is the
-   same at every P?
-4. **Group E.** Is the allocator in scope?
-5. **A2.** Where is `space_alloc.h`, and what is the element type of the 288-
-   element sequence that forked?
+| Question | Decision |
+|---|---|
+| How to turn it on | Environment variable `PARLAY_DETERMINISTIC=1` |
+| Waiting at a join | Busy-wait (change 2) |
+| Granularity when parlay would pick | `PARLAY_DETERMINISTIC_GRANULARITY`, independent of P, default 1 |
+| Explicit nonzero granularities | Left unchanged |
+| Group D (`num_workers()`-based sizing) | Deferred; no profiled benchmark reaches it |
+| Group E (allocator) | Out of scope for now |
+
+## Still open
+
+- **A2 in `ann`.** The observed 288-element fork is explained by the type
+  (`pid` takes the timing path) but hasn't been reproduced. After change 3 it
+  stops mattering, because the timing path is gone in deterministic mode.
 
 ## Running the probes
 
