@@ -120,8 +120,11 @@ struct scheduler {
  public:
 
   // True if PARLAY_DETERMINISTIC=1 was set when the scheduler was constructed.
-  // In deterministic mode, a worker waiting at a join busy waits instead of
-  // running unrelated work on top of its waiting frame.
+  // In deterministic mode, parallel_for calls that pass granularity 0 use
+  // deterministic_granularity() instead of a timing-based estimate, so two
+  // runs build the same fork tree, and a worker waiting at a join busy waits
+  // instead of running unrelated work on top of its waiting frame. Which
+  // worker runs which task is still decided by work stealing.
   bool deterministic() const noexcept { return deterministic_mode; }
 
   // Leaf size used in deterministic mode for parallel_for calls that pass
@@ -460,7 +463,12 @@ class fork_join_scheduler {
   template <typename V, typename F>
   static void parfor(scheduler<V>& sched, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
     if (end <= start) return;
-    if (granularity == 0) {
+    // In deterministic mode the leaf size must not depend on timing or on
+    // the number of workers, so the configured one replaces the estimate.
+    if (granularity == 0 && sched.deterministic()) {
+      granularity = sched.deterministic_granularity();
+    }
+    else if (granularity == 0) {
       size_t done = get_granularity(start, end, f);
       granularity = std::max(done, (end - start) / static_cast<size_t>(128 * sched.num_threads));
       start += done;
