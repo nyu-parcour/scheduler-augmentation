@@ -1,11 +1,11 @@
-# Deterministic mode: findings and proposed changes
+# Deterministic mode: findings and changes
 
-This directory holds the plan for an opt-in deterministic mode of the parlay
-scheduler, plus small programs that demonstrate each source of
-non-determinism. This change adds no scheduler code; the changes below are
-proposals to be implemented one by one.
+This directory holds the findings and design for an opt-in deterministic
+mode of the parlay scheduler, plus small programs that demonstrate each
+source of non-determinism. The four changes under [Changes](#changes) are
+implemented on this branch, one commit each.
 
-Line numbers refer to commit `2a9ceba`.
+Line numbers in the findings refer to commit `2a9ceba`, before the changes.
 
 ## What "deterministic" means here
 
@@ -138,7 +138,7 @@ they are:
 | `scheduler.h:297-306` | The steal victim is `hash(id) + hash(attempts[id])`. `attempts` counts for the whole program, so which victim is tried at a given moment depends on earlier timing. Whether a steal succeeds depends on timing too. |
 | `scheduler.h:287-292` | Back-off after failed steals uses `sleep_for`. |
 | `scheduler.h:127-132` | Workers start stealing as soon as their thread starts, so OS thread startup decides what they take first. |
-| `scheduler.h:38-50, 308-350` | Elastic parallelism makes timeout and sleep decisions based on time. It is compiled off (`false` at line 39, although the comment at line 37 says the default is true). |
+| `scheduler.h:38-50, 308-350` | Elastic parallelism makes timeout and sleep decisions based on time. It is compiled off (`false` at line 39, although the comment at line 37 said the default is true). Change 4 fixes the comment and rejects deterministic mode when it is compiled in. |
 
 ### D. Fixed for a given P, but changes with P (deferred)
 
@@ -176,17 +176,25 @@ drowned out the P term.
   (`primitives.h:518-522`) gives a deterministic value. The deque is
   deterministic.
 
-## Proposed changes
+## Changes
 
-Each one is meant to be a separate commit.
+Each one is a separate commit on this branch. The results are from
+`run_tests.sh` at P=8 with 20 runs per case, unless noted otherwise.
 
 ### 1. Read the flag
 
-- In the `scheduler` constructor, read `PARLAY_DETERMINISTIC` and
-  `PARLAY_DETERMINISTIC_GRANULARITY` into two `const` members (for example
-  `deterministic` and `deterministic_granularity`) and add public accessors.
-- `PARLAY_DETERMINISTIC_GRANULARITY` defaults to 1 when unset.
-- Reject a granularity of 0 or a non-number with a clear error.
+- The `scheduler` constructor reads both variables into two `const` members,
+  with public accessors `deterministic()` and `deterministic_granularity()`.
+- `PARLAY_DETERMINISTIC`: unset or `0` is off, `1` is on, and any other value
+  throws.
+- `PARLAY_DETERMINISTIC_GRANULARITY` must be a positive integer and defaults
+  to 1. It is read only when the flag is on, so it has no effect otherwise
+  and a bad value is ignored.
+- Bad values throw `std::invalid_argument` with a message naming the
+  variable, before the scheduler takes over `worker_info` or starts any
+  threads.
+- Result: values like `yes`, `0`, `abc`, `-5`, `12x`, an empty string and an
+  overflowing number are rejected with the message.
 
 ### 2. Busy-wait at joins (fixes B1)
 
@@ -194,8 +202,12 @@ Each one is meant to be a separate commit.
   `conservative || deterministic`.
 - Check: `stacking` reports 0 events in deterministic mode without passing
   `conservative`.
+- Result: 0 events in every run with the flag on, against 1,300–16,000
+  events with it off.
 - Cost: a worker whose right half was stolen sits idle until the thief
-  finishes. Expect lower throughput.
+  finishes. Expect lower throughput. The `stacking` probe took about 0.04s
+  with the flag on against 0.03s with it off (3 runs each), which shows the
+  slowdown is there but not how large it is.
 
 ### 3. Fixed, P-independent granularity (fixes A1, and A3 through it)
 
@@ -216,13 +228,27 @@ Each one is meant to be a separate commit.
 - Check: `fork_count pfor_default 100000` and `fork_count u64_tabulate 20000`
   each give a single value across runs, and the same value at
   P = 1, 2, 4 and 8.
+- Result: every fork count is the same in every run and at every P.
+
+  | Case | Flag off | Flag on, granularity 1 | Flag on, granularity 1025 |
+  |---|---|---|---|
+  | `pfor_default 100000` | 15, 36, 64 or 149 | 99999 | 149 |
+  | `u64_tabulate 20000` | mostly 4, sometimes 1 or 769 | 19999 | 27 |
+  | `pair_fill 288` | 0, once 27 | 287 | 0 |
+  | `pair_tabulate 20000` | 4, once 27 | 19999 | 27 |
+  | `u64_fill 2000` (explicit 1025) | 2 | 2 | 2 |
+  | `pfor_gran1 1000` (explicit 1) | 999 | 999 | 999 |
+
+  The last two rows show that explicit granularities are unchanged.
 
 ### 4. Guard elastic parallelism
 
-- If the flag is on while `PARLAY_ELASTIC_PARALLELISM` is compiled in, fail
-  at scheduler construction, since its sleep and timeout decisions are timing
-  based.
+- If the flag is on while `PARLAY_ELASTIC_PARALLELISM` is compiled in,
+  scheduler construction throws, since elastic parallelism makes its sleep
+  and timeout decisions based on time.
 - Fix the "Default: true" comment at `scheduler.h:37`.
+- Result: a build with `-DPARLAY_ELASTIC_PARALLELISM=true` runs with the flag
+  off and is rejected with it on.
 
 ## Decisions
 
@@ -238,15 +264,23 @@ Each one is meant to be a separate commit.
 ## Still open
 
 - **A2 in `ann`.** The observed 288-element fork is explained by the type
-  (`pid` takes the timing path) but hasn't been reproduced. After change 3 it
-  stops mattering, because the timing path is gone in deterministic mode.
+  (`pid` takes the timing path). The probe has now reproduced it once:
+  `pair_fill 288` forked 27 times in 1 of 20 flag-off runs, after 0 forks in
+  the earlier 200. It hasn't been reproduced in `ann` itself. In
+  deterministic mode it can't happen, because the timing path is gone.
 
 ## Running the probes
 
 ```bash
 determinism/run_tests.sh            # P=8, 20 runs per case
 P=4 RUNS=50 determinism/run_tests.sh
+PARLAY_DETERMINISTIC_GRANULARITY=1025 determinism/run_tests.sh
 ```
+
+The script first checks flag parsing and the elastic-parallelism guard, then
+runs every probe twice: once with the flag unset and once with
+`PARLAY_DETERMINISTIC=1`. The deterministic pass uses
+`PARLAY_DETERMINISTIC_GRANULARITY` from the environment, 1 if unset.
 
 | Program | What it does |
 |---|---|
