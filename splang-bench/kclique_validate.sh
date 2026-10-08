@@ -17,6 +17,12 @@
 #   git -C ~/gbbs checkout bd48872385ad907010417bfa939f4fca04e563b8
 #   cd ~/gbbs && USE_BAZEL_VERSION=7.4.1 bazel build //benchmarks/CliqueCounting:Clique_main
 # (gbbs no longer builds with make, and its BUILD files predate Bazel 8.)
+#
+# Graphs are keyed by file name without .adj, and made with pbbs's tools
+# (G=../pbbs/testData/graphData):
+#   com-dblp  SNAP com-dblp.ungraph.txt.gz, '#' lines stripped, "EdgeArray"
+#             prepended, then $G/edgeArrayToAdj -o com-dblp.adj <edges>
+#   rmat17    $G/rMatGraph -j 131072 rmat17.adj   (a=.5 b=c=.1 m=10n seed 1)
 set -euo pipefail
 
 if [ $# -ne 2 ]; then
