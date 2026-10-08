@@ -120,6 +120,8 @@ struct scheduler {
  public:
 
   // True if PARLAY_DETERMINISTIC=1 was set when the scheduler was constructed.
+  // In deterministic mode, a worker waiting at a join busy waits instead of
+  // running unrelated work on top of its waiting frame.
   bool deterministic() const noexcept { return deterministic_mode; }
 
   // Leaf size used in deterministic mode for parallel_for calls that pass
@@ -170,15 +172,17 @@ struct scheduler {
 
   // Wait until the given condition is true.
   //
-  // If conservative, this thread will simply busy wait. Otherwise,
-  // it will look for work to steal and keep itself occupied. This
-  // can deadlock if the stolen work wants a lock held by the code
-  // that is waiting, so avoid that.
+  // If conservative, or in deterministic mode, this thread will simply
+  // busy wait. Otherwise, it will look for work to steal and keep itself
+  // occupied. This can deadlock if the stolen work wants a lock held by
+  // the code that is waiting, so avoid that.
   template <typename F>
   void wait_until(F&& done, bool conservative = false) {
     // Conservative avoids deadlock if scheduler is used in conjunction
-    // with user locks enclosing a wait.
-    if (conservative) {
+    // with user locks enclosing a wait. Deterministic mode busy waits so
+    // that a waiting worker never runs unrelated work on top of its
+    // waiting frame.
+    if (conservative || deterministic_mode) {
       while (!done())
         std::this_thread::yield();
     }
