@@ -18,6 +18,10 @@ plots: $(PLOTS)
 %_result.png: %_result.csv plot.gp
 	gnuplot -c plot.gp $*
 
+# kclique CSVs come from kclique_run.sh; this rule wins over the one above (shorter stem).
+kclique_%_result.png: kclique_%_result.csv kclique_plot.gp
+	gnuplot -c kclique_plot.gp kclique_$*_result 'k-clique counting ($*): memory vs. threads'
+
 allocfree: allocfree.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) allocfree.cpp -o $@
 
