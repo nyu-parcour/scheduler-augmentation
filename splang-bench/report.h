@@ -25,6 +25,11 @@ constexpr std::int64_t cell_bytes = static_cast<std::int64_t>(sizeof(std::int64_
 struct options {
   std::int64_t size;
   bool json = false;
+  // kclique only; the other benchmarks ignore them.
+  std::int64_t k = 0;
+  bool fused_base = false;
+  bool orient_inside = false;
+  const char* graph = nullptr;  // positional
 };
 
 inline options parse_args(int argc, char** argv, std::int64_t default_size) {
@@ -36,8 +41,21 @@ inline options parse_args(int argc, char** argv, std::int64_t default_size) {
     else if (std::strcmp(argv[i], "--json") == 0) {
       o.json = true;
     }
+    else if (std::strcmp(argv[i], "--k") == 0 && i + 1 < argc) {
+      o.k = std::atoll(argv[++i]);
+    }
+    else if (std::strcmp(argv[i], "--fused-base") == 0) {
+      o.fused_base = true;
+    }
+    else if (std::strcmp(argv[i], "--orient-inside") == 0) {
+      o.orient_inside = true;
+    }
+    else if (argv[i][0] != '-' && o.graph == nullptr) {
+      o.graph = argv[i];
+    }
     else {
-      std::fprintf(stderr, "usage: %s [--size N] [--json]\n", argv[0]);
+      std::fprintf(stderr, "usage: %s [--size N] [--json] "
+                           "[--k K] [--fused-base] [--orient-inside] [graph]\n", argv[0]);
       std::exit(2);
     }
   }
@@ -46,14 +64,17 @@ inline options parse_args(int argc, char** argv, std::int64_t default_size) {
 
 // `value` is printed as a string so that it lines up with splang's JSON, which
 // reports "()" for allocfree and a numeral for nqueens.
+//
+// expect_alloc is false only for a configuration that legitimately allocates
+// nothing (kclique at k = 3 with --fused-base), where zero is the measurement.
 inline void report(const char* example, const options& o, const char* value,
-                   const parlay::space_vertex& v, double ms) {
+                   const parlay::space_vertex& v, double ms, bool expect_alloc = true) {
   // A vertex that saw nothing means the computation ran outside the augmented
   // region, or under a scheduler installing some other vertex type. Every
-  // program here allocates, so zero is always a harness bug rather than a
+  // other program here allocates, so zero is a harness bug rather than a
   // measurement.
   if constexpr (parlay::augmentation_enabled) {
-    if (v.s1star == 0) {
+    if (expect_alloc && v.s1star == 0) {
       std::fprintf(stderr, "error: vertex recorded no allocation; "
                            "is the computation inside parlay::augment?\n");
       std::exit(1);
