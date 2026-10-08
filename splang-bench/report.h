@@ -27,6 +27,9 @@ struct options {
   bool json = false;
 };
 
+// --deterministic true|false sets PARLAY_DETERMINISTIC, which the scheduler
+// reads once when it is constructed, so this must run before the first parlay
+// call. Without the option the environment is left as it is.
 inline options parse_args(int argc, char** argv, std::int64_t default_size) {
   options o{default_size, false};
   for (int i = 1; i < argc; i++) {
@@ -36,8 +39,12 @@ inline options parse_args(int argc, char** argv, std::int64_t default_size) {
     else if (std::strcmp(argv[i], "--json") == 0) {
       o.json = true;
     }
+    else if (std::strcmp(argv[i], "--deterministic") == 0 && i + 1 < argc &&
+             (std::strcmp(argv[i + 1], "true") == 0 || std::strcmp(argv[i + 1], "false") == 0)) {
+      setenv("PARLAY_DETERMINISTIC", std::strcmp(argv[++i], "true") == 0 ? "1" : "0", 1);
+    }
     else {
-      std::fprintf(stderr, "usage: %s [--size N] [--json]\n", argv[0]);
+      std::fprintf(stderr, "usage: %s [--size N] [--json] [--deterministic true|false]\n", argv[0]);
       std::exit(2);
     }
   }
