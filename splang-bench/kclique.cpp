@@ -25,8 +25,9 @@
 //
 // The oriented graph is built outside the augmented region and never charged,
 // so S = 0. With --orient-inside the same orientation runs inside it instead:
-// its arrays are space_sequences allocated on the spine, where they make up S.
-// There the degree order comes from parlay::sort, whose scratch is uncharged.
+// its two arrays, offsets and out-edges, are space_sequences allocated on the
+// spine, where they make up S. The rank by degree is never materialized: it is
+// compared directly as (degree, id), so there is no rank array and no sort.
 //
 // Input is a symmetric PBBS AdjacencyGraph; the vertex id type is vid.
 
@@ -97,37 +98,34 @@ graph_t read_adjacency_graph(const char* path) {
   return g;
 }
 
-// The degree-oriented DAG: u -> v iff rank[u] < rank[v], where rank is the
-// position in the order by (degree, id). Out-lists are sorted by id, so that
-// intersecting two of them is a merge. Seq is plain_seq outside the augmented
-// region and seq inside it, and nothing else differs.
+// The degree-oriented DAG: u -> v iff u comes before v in the order by
+// (degree, id). Out-lists are sorted by id, so that intersecting two of them
+// is a merge. Seq is plain_seq outside the augmented region and seq inside
+// it, and nothing else differs.
 template <template <typename> class Seq>
 struct dag_t {
-  Seq<vid> rank;     // n
+  vid n = 0;
   Seq<eid> offsets;  // n+1
   Seq<vid> edges;    // m/2
 };
+
+// rank[u] < rank[v] for the rank by (degree, id), without the rank array.
+bool before(const graph_t& g, vid u, vid v) {
+  const eid du = g.degree(u), dv = g.degree(v);
+  return du < dv || (du == dv && u < v);
+}
 
 template <template <typename> class Seq>
 dag_t<Seq> orient(const graph_t& g) {
   const vid n = g.n;
   dag_t<Seq> d;
-  {
-    auto order = Seq<vid>::uninitialized(n);
-    parlay::parallel_for(0, n, [&](long i) { order[i] = i; }, orient_grain);
-    parlay::sort_inplace(order, [&](vid a, vid b) {
-      const eid da = g.degree(a), db = g.degree(b);
-      return da < db || (da == db && a < b);
-    });
-    d.rank = Seq<vid>::uninitialized(n);
-    parlay::parallel_for(0, n, [&](long i) { d.rank[order[i]] = i; }, orient_grain);
-  }
+  d.n = n;
 
   // out-degrees, then their exclusive scan, which leaves m/2 in offsets[n]
   d.offsets = Seq<eid>::uninitialized(n + 1);
   parlay::parallel_for(0, n, [&](long u) {
     eid c = 0;
-    for (eid j = g.offsets[u]; j < g.offsets[u + 1]; j++) c += d.rank[u] < d.rank[g.edges[j]];
+    for (eid j = g.offsets[u]; j < g.offsets[u + 1]; j++) c += before(g, u, g.edges[j]);
     d.offsets[u] = c;
   }, orient_grain);
   d.offsets[n] = 0;
@@ -138,7 +136,7 @@ dag_t<Seq> orient(const graph_t& g) {
     eid k = d.offsets[u];
     for (eid j = g.offsets[u]; j < g.offsets[u + 1]; j++) {
       const vid v = g.edges[j];
-      if (d.rank[u] < d.rank[v]) d.edges[k++] = v;
+      if (before(g, u, v)) d.edges[k++] = v;
     }
     std::sort(d.edges.begin() + d.offsets[u], d.edges.begin() + k);
   }, orient_grain);
@@ -156,7 +154,7 @@ struct dag_view {
 
 template <template <typename> class Seq>
 dag_view view(const dag_t<Seq>& d) {
-  return {static_cast<vid>(d.rank.size()), d.offsets.data(), d.edges.data()};
+  return {d.n, d.offsets.data(), d.edges.data()};
 }
 
 eid max_out_degree(const dag_view& d) {
