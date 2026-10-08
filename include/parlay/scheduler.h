@@ -12,6 +12,8 @@
 #include <chrono>         // IWYU pragma: keep
 #include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <type_traits>    // IWYU pragma: keep
 #include <utility>
@@ -107,6 +109,24 @@ struct scheduler {
 
   const worker_id_type num_threads;
 
+ private:
+  // Deterministic mode, read from the environment once at construction.
+  // Declared before the members whose initializers have side effects, so a
+  // bad value throws before the scheduler takes over worker_info or spawns
+  // any threads.
+  const bool deterministic_mode;
+  const size_t deterministic_grain;
+
+ public:
+
+  // True if PARLAY_DETERMINISTIC=1 was set when the scheduler was constructed.
+  bool deterministic() const noexcept { return deterministic_mode; }
+
+  // Leaf size used in deterministic mode for parallel_for calls that pass
+  // granularity 0, from PARLAY_DETERMINISTIC_GRANULARITY (default 1).
+  // It does not depend on the number of workers.
+  size_t deterministic_granularity() const noexcept { return deterministic_grain; }
+
   // If the current thread is a worker of an existing scheduler, or the thread that spawned
   // a scheduler, return the most recent such scheduler.  Otherwise, returns null.
   static scheduler* get_current_scheduler() {
@@ -115,6 +135,8 @@ struct scheduler {
 
   explicit scheduler(size_t num_workers)
       : num_threads(num_workers),
+        deterministic_mode(read_deterministic_flag()),
+        deterministic_grain(deterministic_mode ? read_deterministic_granularity() : 1),
         num_deques(num_threads),
         num_awake_workers(num_threads),
         parent_worker_info(std::exchange(worker_info, workerInfo{0, this})),
@@ -347,6 +369,43 @@ struct scheduler {
     num_awake_workers.fetch_add(1);
   }
 
+#endif
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)  // 'getenv': This function or variable may be unsafe.
+#endif
+
+  // PARLAY_DETERMINISTIC: unset or "0" is off, "1" is on, anything else throws.
+  static bool read_deterministic_flag() {
+    const char* env = std::getenv("PARLAY_DETERMINISTIC");
+    if (env == nullptr || std::strcmp(env, "0") == 0) return false;
+    if (std::strcmp(env, "1") == 0) return true;
+    throw std::invalid_argument(
+      std::string("PARLAY_DETERMINISTIC must be 0 or 1, got \"") + env + "\"");
+  }
+
+  // PARLAY_DETERMINISTIC_GRANULARITY: a positive integer, 1 if unset.
+  // Only read in deterministic mode; otherwise it has no effect.
+  static size_t read_deterministic_granularity() {
+    const char* env = std::getenv("PARLAY_DETERMINISTIC_GRANULARITY");
+    if (env == nullptr) return 1;
+    size_t value = 0;
+    const char* p = env;
+    for (; *p >= '0' && *p <= '9'; ++p) {
+      size_t digit = static_cast<size_t>(*p - '0');
+      if (value > (std::numeric_limits<size_t>::max() - digit) / 10) break;
+      value = value * 10 + digit;
+    }
+    if (p == env || *p != '\0' || value == 0) {
+      throw std::invalid_argument(
+        std::string("PARLAY_DETERMINISTIC_GRANULARITY must be a positive integer, got \"") + env + "\"");
+    }
+    return value;
+  }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
 #endif
 
   size_t hash(uint64_t x) {
