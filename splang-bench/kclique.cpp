@@ -167,6 +167,12 @@ eid max_out_degree(const dag_view& d) {
 
 // Sum leaf(i) over [lo, hi), halving the range down to single positions, as
 // nqueens does with its column range.
+//
+// The par_do is conservative: a worker whose right half was stolen waits for
+// it instead of stealing other work. A non-conservative join runs whatever it
+// steals on top of the waiting frame, whose I' stays live underneath, so one
+// worker can hold several root-to-leaf paths at once; on com-dblp at k = 4
+// the observed HWM then exceeds S + P*R1star by up to 1.4x.
 template <typename Leaf>
 count_t sum_range(long lo, long hi, const Leaf& leaf) {
   if (hi - lo <= 0) return 0;
@@ -174,7 +180,7 @@ count_t sum_range(long lo, long hi, const Leaf& leaf) {
   const long mid = lo + (hi - lo) / 2;
   count_t a = 0, b = 0;
   parlay::par_do([&]() { a = sum_range(lo, mid, leaf); },
-                 [&]() { b = sum_range(mid, hi, leaf); });
+                 [&]() { b = sum_range(mid, hi, leaf); }, /*conservative=*/true);
   return a + b;
 }
 
