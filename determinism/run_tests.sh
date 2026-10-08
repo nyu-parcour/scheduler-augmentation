@@ -11,6 +11,7 @@ CXX=${CXX:-c++}
 for prog in fork_count stacking pair_traits; do
   $CXX -std=c++17 -O2 -pthread -w -I"$INC" "$prog.cpp" -o "$prog"
 done
+$CXX -std=c++17 -O2 -pthread -w -I"$INC" -DPARLAY_ELASTIC_PARALLELISM=true fork_count.cpp -o fork_count_elastic
 
 distinct() { sort -n | uniq -c | awk '{printf "%s×%s  ", $2, $1}'; echo; }
 
@@ -34,6 +35,17 @@ for envs in "PARLAY_DETERMINISTIC=0" "PARLAY_DETERMINISTIC=1" "PARLAY_DETERMINIS
     echo "accepted"
   else
     echo "rejected: $(grep -o 'PARLAY_DETERMINISTIC[A-Z_]* must.*' <<<"$out" || echo "$out")"
+  fi
+done
+
+echo "== elastic parallelism compiled in =="
+for envs in "PARLAY_DETERMINISTIC=0" "PARLAY_DETERMINISTIC=1"; do
+  printf "%-74s " "$envs"
+  # shellcheck disable=SC2086
+  if out=$(env PARLAY_NUM_THREADS=$P $envs ./fork_count_elastic pfor_gran1 1000 2>&1); then
+    echo "accepted"
+  else
+    echo "rejected: $(grep -o 'PARLAY_DETERMINISTIC=1 cannot.*' <<<"$out" || echo "$out")"
   fi
 done
 

@@ -35,8 +35,9 @@
 // proportional to the amount of work to be done. This saves CPU
 // time if there is not any parallel work available, but may cause
 // some startup lag when more parallelism becomes available.
+// Not supported in deterministic mode (PARLAY_DETERMINISTIC=1).
 //
-// Default: true
+// Default: false
 #ifndef PARLAY_ELASTIC_PARALLELISM
 #define PARLAY_ELASTIC_PARALLELISM false
 #endif
@@ -384,10 +385,19 @@ struct scheduler {
 #endif
 
   // PARLAY_DETERMINISTIC: unset or "0" is off, "1" is on, anything else throws.
+  // Turning it on also throws if elastic parallelism is compiled in, since
+  // that decides when workers sleep and time out based on time.
   static bool read_deterministic_flag() {
     const char* env = std::getenv("PARLAY_DETERMINISTIC");
     if (env == nullptr || std::strcmp(env, "0") == 0) return false;
-    if (std::strcmp(env, "1") == 0) return true;
+    if (std::strcmp(env, "1") == 0) {
+#if PARLAY_ELASTIC_PARALLELISM
+      throw std::invalid_argument(
+        "PARLAY_DETERMINISTIC=1 cannot be used when PARLAY_ELASTIC_PARALLELISM is enabled");
+#else
+      return true;
+#endif
+    }
     throw std::invalid_argument(
       std::string("PARLAY_DETERMINISTIC must be 0 or 1, got \"") + env + "\"");
   }
