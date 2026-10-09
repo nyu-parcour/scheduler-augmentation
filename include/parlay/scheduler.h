@@ -12,6 +12,8 @@
 #include <chrono>         // IWYU pragma: keep
 #include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <type_traits>    // IWYU pragma: keep
 #include <utility>
@@ -33,8 +35,9 @@
 // proportional to the amount of work to be done. This saves CPU
 // time if there is not any parallel work available, but may cause
 // some startup lag when more parallelism becomes available.
+// Not supported in deterministic mode (PARLAY_DETERMINISTIC=1).
 //
-// Default: true
+// Default: false
 #ifndef PARLAY_ELASTIC_PARALLELISM
 #define PARLAY_ELASTIC_PARALLELISM false
 #endif
@@ -107,6 +110,29 @@ struct scheduler {
 
   const worker_id_type num_threads;
 
+ private:
+  // Deterministic mode, read from the environment once at construction.
+  // Declared before the members whose initializers have side effects, so a
+  // bad value throws before the scheduler takes over worker_info or spawns
+  // any threads.
+  const bool deterministic_mode;
+  const size_t deterministic_grain;
+
+ public:
+
+  // True if PARLAY_DETERMINISTIC=1 was set when the scheduler was constructed.
+  // In deterministic mode, parallel_for calls that pass granularity 0 use
+  // deterministic_granularity() instead of a timing-based estimate, so two
+  // runs build the same fork tree, and a worker waiting at a join busy waits
+  // instead of running unrelated work on top of its waiting frame. Which
+  // worker runs which task is still decided by work stealing.
+  bool deterministic() const noexcept { return deterministic_mode; }
+
+  // Leaf size used in deterministic mode for parallel_for calls that pass
+  // granularity 0, from PARLAY_DETERMINISTIC_GRANULARITY (default 1).
+  // It does not depend on the number of workers.
+  size_t deterministic_granularity() const noexcept { return deterministic_grain; }
+
   // If the current thread is a worker of an existing scheduler, or the thread that spawned
   // a scheduler, return the most recent such scheduler.  Otherwise, returns null.
   static scheduler* get_current_scheduler() {
@@ -115,6 +141,8 @@ struct scheduler {
 
   explicit scheduler(size_t num_workers)
       : num_threads(num_workers),
+        deterministic_mode(read_deterministic_flag()),
+        deterministic_grain(deterministic_mode ? read_deterministic_granularity() : 1),
         num_deques(num_threads),
         num_awake_workers(num_threads),
         parent_worker_info(std::exchange(worker_info, workerInfo{0, this})),
@@ -148,15 +176,17 @@ struct scheduler {
 
   // Wait until the given condition is true.
   //
-  // If conservative, this thread will simply busy wait. Otherwise,
-  // it will look for work to steal and keep itself occupied. This
-  // can deadlock if the stolen work wants a lock held by the code
-  // that is waiting, so avoid that.
+  // If conservative, or in deterministic mode, this thread will simply
+  // busy wait. Otherwise, it will look for work to steal and keep itself
+  // occupied. This can deadlock if the stolen work wants a lock held by
+  // the code that is waiting, so avoid that.
   template <typename F>
   void wait_until(F&& done, bool conservative = false) {
     // Conservative avoids deadlock if scheduler is used in conjunction
-    // with user locks enclosing a wait.
-    if (conservative) {
+    // with user locks enclosing a wait. Deterministic mode busy waits so
+    // that a waiting worker never runs unrelated work on top of its
+    // waiting frame.
+    if (conservative || deterministic_mode) {
       while (!done())
         std::this_thread::yield();
     }
@@ -349,6 +379,52 @@ struct scheduler {
 
 #endif
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)  // 'getenv': This function or variable may be unsafe.
+#endif
+
+  // PARLAY_DETERMINISTIC: unset or "0" is off, "1" is on, anything else throws.
+  // Turning it on also throws if elastic parallelism is compiled in, since
+  // that decides when workers sleep and time out based on time.
+  static bool read_deterministic_flag() {
+    const char* env = std::getenv("PARLAY_DETERMINISTIC");
+    if (env == nullptr || std::strcmp(env, "0") == 0) return false;
+    if (std::strcmp(env, "1") == 0) {
+#if PARLAY_ELASTIC_PARALLELISM
+      throw std::invalid_argument(
+        "PARLAY_DETERMINISTIC=1 cannot be used when PARLAY_ELASTIC_PARALLELISM is enabled");
+#else
+      return true;
+#endif
+    }
+    throw std::invalid_argument(
+      std::string("PARLAY_DETERMINISTIC must be 0 or 1, got \"") + env + "\"");
+  }
+
+  // PARLAY_DETERMINISTIC_GRANULARITY: a positive integer, 1 if unset.
+  // Only read in deterministic mode; otherwise it has no effect.
+  static size_t read_deterministic_granularity() {
+    const char* env = std::getenv("PARLAY_DETERMINISTIC_GRANULARITY");
+    if (env == nullptr) return 1;
+    size_t value = 0;
+    const char* p = env;
+    for (; *p >= '0' && *p <= '9'; ++p) {
+      size_t digit = static_cast<size_t>(*p - '0');
+      if (value > (std::numeric_limits<size_t>::max() - digit) / 10) break;
+      value = value * 10 + digit;
+    }
+    if (p == env || *p != '\0' || value == 0) {
+      throw std::invalid_argument(
+        std::string("PARLAY_DETERMINISTIC_GRANULARITY must be a positive integer, got \"") + env + "\"");
+    }
+    return value;
+  }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+
   size_t hash(uint64_t x) {
     x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
     x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
@@ -397,7 +473,12 @@ class fork_join_scheduler {
   template <typename V, typename F>
   static void parfor(scheduler<V>& sched, size_t start, size_t end, F&& f, size_t granularity = 0, bool conservative = false) {
     if (end <= start) return;
-    if (granularity == 0) {
+    // In deterministic mode the leaf size must not depend on timing or on
+    // the number of workers, so the configured one replaces the estimate.
+    if (granularity == 0 && sched.deterministic()) {
+      granularity = sched.deterministic_granularity();
+    }
+    else if (granularity == 0) {
       size_t done = get_granularity(start, end, f);
       granularity = std::max(done, (end - start) / static_cast<size_t>(128 * sched.num_threads));
       start += done;

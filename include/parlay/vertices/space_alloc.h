@@ -17,10 +17,11 @@
 //       whatever the sequence asks for. Note that this is a real sequence and
 //       behaves like one: it stores a size_t capacity alongside the elements,
 //       so an n-element sequence costs n*sizeof(T) plus that word, and it
-//       initializes its elements with a parallel_for, which forks once the
-//       length exceeds parlay's granularity threshold of 1 + 8192/sizeof(T)
-//       elements. Both show up in the measurements, correctly so -- they are
-//       things the program really does. sequence::uninitialized(n) skips the
+//       initializes its elements with a parallel_for. For trivial T that loop
+//       forks only above 1 + 8192/sizeof(T) elements; for other T (std::pair
+//       included) parlay picks the leaf size by timing, so the forks vary
+//       between runs, unless PARLAY_DETERMINISTIC=1 fixes it at
+//       PARLAY_DETERMINISTIC_GRANULARITY. sequence::uninitialized(n) skips the
 //       initialization entirely and so never forks.
 //
 // NOTE: this assumes the allocator layer itself is *not* instrumented. If
