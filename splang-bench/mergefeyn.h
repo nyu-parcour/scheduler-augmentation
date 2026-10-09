@@ -129,7 +129,8 @@ class SortedState {
     auto merged = seq<WeightedIdx>::uninitialized(n);
     merge_into(a.data_.data(), a.data_.size(), b.data_.data(), b.data_.size(), merged.data());
 
-    // 2. Combine adjacent duplicates. Each index occurs at most twice.
+    // 2. Combine adjacent duplicates, dropping any whose weights cancel to
+    //    zero. Each index occurs at most twice.
     auto same_as_prev = [&](std::size_t i) {
       return i > 0 && merged[i].idx == merged[i - 1].idx;
     };
@@ -138,14 +139,14 @@ class SortedState {
       if (i + 1 < n && merged[i + 1].idx == w.idx) w.weight = w.weight + merged[i + 1].weight;
       return w;
     };
+    auto keep = [&](std::size_t i) { return !same_as_prev(i) && !combine(i).weight.is_zero(); };
     SortedState result;
     if (n <= merge_grain) {
       for (std::size_t i = 0; i < n; i++)
-        if (!same_as_prev(i)) result.data_.push_back(combine(i));
+        if (keep(i)) result.data_.push_back(combine(i));
     } else {
       // parlay::pack_index, then parlay::tabulate
-      auto starts = pack<std::size_t>(
-          n, [](std::size_t i) { return i; }, [&](std::size_t i) { return !same_as_prev(i); });
+      auto starts = pack<std::size_t>(n, [](std::size_t i) { return i; }, keep);
       result.data_ = seq<WeightedIdx>::from_function(
           starts.size(), [&](std::size_t k) { return combine(starts[k]); });
     }
