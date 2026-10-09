@@ -7,18 +7,19 @@ CXX      ?= g++
 CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread \
             -DPARLAY_DYNAMIC_VERTEX_CAPACITY=64
 
-BINS := allocfree nqueens strassen karatsuba ann kclique
+BINS := allocfree nqueens strassen karatsuba ann mergefeyn kclique
 # One plot per result CSV; the CSVs themselves come from run.sh.
-PLOTS := $(patsubst %.csv,%.png,$(wildcard *_result.csv))
+PLOTS := $(patsubst %-result.csv,%-result.pdf,$(wildcard *-result.csv)) \
+         $(patsubst %.csv,%.png,$(wildcard kclique_*_result.csv))
 
 all: $(BINS) plots
 
 plots: $(PLOTS)
 
-%_result.png: %_result.csv plot.gp
+%-result.pdf: %-result.csv plot.gp
 	gnuplot -c plot.gp $*
 
-# kclique CSVs come from kclique_run.sh; this rule wins over the one above (shorter stem).
+# kclique CSVs come from kclique_run.sh.
 kclique_%_result.png: kclique_%_result.csv kclique_plot.gp
 	gnuplot -c kclique_plot.gp kclique_$*_result 'k-clique counting ($*): memory vs. threads'
 
@@ -36,6 +37,9 @@ karatsuba: karatsuba.cpp karatsuba.h bigint_add.h report.h $(INCLUDE)/parlay/ver
 
 ann: ann.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) ann.cpp -o $@
+
+mergefeyn: mergefeyn.cpp mergefeyn.h report.h $(INCLUDE)/parlay/vertices/space_alloc.h
+	$(CXX) $(CXXFLAGS) mergefeyn.cpp -o $@
 
 kclique: kclique.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) kclique.cpp -o $@
