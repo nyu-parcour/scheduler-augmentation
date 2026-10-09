@@ -7,15 +7,15 @@ CXX      ?= g++
 CXXFLAGS := -O2 -std=c++17 -I$(INCLUDE) -I$(INCLUDE)/spdlog/include -pthread \
             -DPARLAY_DYNAMIC_VERTEX_CAPACITY=64
 
-BINS := allocfree nqueens strassen karatsuba ann
+BINS := allocfree nqueens strassen karatsuba ann mergefeyn
 # One plot per result CSV; the CSVs themselves come from run.sh.
-PLOTS := $(patsubst %.csv,%.png,$(wildcard *_result.csv))
+PLOTS := $(patsubst %-result.csv,%-result.pdf,$(wildcard *-result.csv))
 
 all: $(BINS) plots
 
 plots: $(PLOTS)
 
-%_result.png: %_result.csv plot.gp
+%-result.pdf: %-result.csv plot.gp
 	gnuplot -c plot.gp $*
 
 allocfree: allocfree.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
@@ -32,6 +32,9 @@ karatsuba: karatsuba.cpp karatsuba.h bigint_add.h report.h $(INCLUDE)/parlay/ver
 
 ann: ann.cpp report.h $(INCLUDE)/parlay/vertices/space_alloc.h
 	$(CXX) $(CXXFLAGS) ann.cpp -o $@
+
+mergefeyn: mergefeyn.cpp mergefeyn.h report.h $(INCLUDE)/parlay/vertices/space_alloc.h
+	$(CXX) $(CXXFLAGS) mergefeyn.cpp -o $@
 
 check: $(BINS)
 	python3 compare.py

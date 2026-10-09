@@ -22,7 +22,11 @@
 // The index is built outside the augmented region, since only the search is
 // measured: n random points in the unit cube, each linked to its nearest
 // neighbors plus a few random points for long-range edges. --size is the
-// number of queries.
+// number of queries. As in strassen, the computation then copies the index
+// and the queries into charged memory before searching, serially so that the
+// copies add no forks. They are live across the whole search and every worker
+// reads them, so they land in S and are counted once, where P*R1star would
+// count them once per worker.
 
 #include <algorithm>
 #include <cmath>
@@ -66,13 +70,26 @@ float distance(const float* a, const float* b) {
   return r;
 }
 
-// The index: coordinates and out-edges, both flat, never charged.
-struct index_t {
-  parlay::sequence<float> coords;  // num_points * dims
-  parlay::sequence<int> edges;     // num_points * degree
+// The index: coordinates and out-edges, both flat.
+template <typename Floats, typename Ints>
+struct basic_index {
+  Floats coords;  // num_points * dims
+  Ints edges;     // num_points * degree
   const float* point(long i) const { return coords.data() + i * dims; }
   const int* out(long i) const { return edges.data() + i * degree; }
 };
+// As built, never charged.
+using index_t = basic_index<parlay::sequence<float>, parlay::sequence<int>>;
+// The copy the search runs on, charged.
+using charged_index_t = basic_index<seq<float>, seq<int>>;
+
+// A serial, charged copy of s.
+template <typename T>
+seq<T> charged_copy(const parlay::sequence<T>& s) {
+  auto c = seq<T>::uninitialized(s.size());
+  std::copy(s.begin(), s.end(), c.begin());
+  return c;
+}
 
 parlay::sequence<float> random_points(long n, long seed) {
   parlay::random_generator gen(seed);
@@ -102,7 +119,8 @@ index_t build_index() {
 
 // beam_search from beamSearch.h returning the
 // final frontier.
-seq<pid> beam_search(const float* p, const index_t& g, int start) {
+template <typename Index>
+seq<pid> beam_search(const float* p, const Index& g, int start) {
   auto less = [](pid a, pid b) {
     return a.second < b.second || (a.second == b.second && a.first < b.first);
   };
@@ -173,12 +191,14 @@ int main(int argc, char** argv) {
   parlay::space_reset_counters();
   splang_bench::timer t;
   auto v = parlay::augment(parlay::space_vertex{}, [&]() {
+    const charged_index_t index{charged_copy(g.coords), charged_copy(g.edges)};
+    const seq<float> qs = charged_copy(queries);
     ngh = seq<seq<int>>(nq);
     for (long i = 0; i < nq; i++) ngh[i] = seq<int>(k);
     // searchAll
     parlay::parallel_for(0, nq, [&](long i) {
       seq<int>& neighbors = ngh[i];
-      seq<pid> beam = beam_search(queries.data() + i * dims, g, start);
+      seq<pid> beam = beam_search(qs.data() + i * dims, index, start);
       for (int j = 0; j < k; j++) neighbors[j] = beam[j].first;
     }, 1);
   });
