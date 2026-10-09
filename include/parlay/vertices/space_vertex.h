@@ -39,6 +39,13 @@
 // (Summary.spineSeq / spinePar / spineParMin). It is not always tighter than
 // P * s1star, because S and R1star_partial may come from different points on
 // the spine; take the smaller of the two.
+//
+//   spine_bound    the refined spine bound for this run's P: the max over the
+//                  spine of the gross at every sequential point and, for each
+//                  block, the level it started from plus P times its own
+//                  s1star. A block's peak never coincides with the sequential
+//                  work after it, so this is at most S + P * R1star_partial,
+//                  and it applies under the same condition.
 
 #ifndef PARLAY_SPACE_VERTEX_H_
 #define PARLAY_SPACE_VERTEX_H_
@@ -53,6 +60,8 @@
 #include "spdlog/sinks/basic_file_sink.h"
 
 namespace parlay {
+
+inline size_t num_workers();
 
 class space_vertex {
  public:
@@ -70,6 +79,7 @@ class space_vertex {
   isize_t spine_seq = 0;
   isize_t spine_par = 0;
   isize_t spine_par_min = 0;
+  isize_t spine_bound = 0;
 
   // Space is accounted at the allocator, not on a clock, so there is nothing
   // to pause or resume on a strand boundary.
@@ -101,6 +111,9 @@ class space_vertex {
     join_v->spine_seq = std::max(spine_seq, gross);
     join_v->spine_par = std::max(spine_par, block_s1star);
     join_v->spine_par_min = std::min(spine_par_min, block_min_prefix);
+    // Only this block's workers run on top of the level it started from.
+    const isize_t p = static_cast<isize_t>(num_workers());
+    join_v->spine_bound = std::max(spine_bound, gross + p * block_s1star);
   }
 
   // Reported by the allocator on every allocation made by this strand.
@@ -110,6 +123,7 @@ class space_vertex {
     s1star = std::max(s1star, gross);
     sinf = std::max(sinf, gross);
     spine_seq = std::max(spine_seq, gross);
+    spine_bound = std::max(spine_bound, gross);
   }
 
   // Reported by the allocator on every deallocation made by this strand.
@@ -117,6 +131,7 @@ class space_vertex {
     // The level before the free. Right after a join it can exceed spine_seq,
     // since a block that leaves memory behind only records its starting level.
     spine_seq = std::max(spine_seq, gross);
+    spine_bound = std::max(spine_bound, gross);
     gross -= static_cast<isize_t>(n);
     s1 = std::max(s1, gross);
     s1star = std::max(s1star, gross);
@@ -129,9 +144,9 @@ class space_vertex {
         spdlog::basic_logger_mt("space_vertex_logger", "logs_vertex.txt");
     logger->info(
         "Threads:{},s1:{},s1star:{},sinf:{},gross:{},min_prefix:{},spine_seq:{},"
-        "spine_par:{},spine_par_min:{}",
+        "spine_par:{},spine_par_min:{},spine_bound:{}",
         num_threads, s1, s1star, sinf, gross, min_prefix, spine_seq, spine_par,
-        spine_par_min);
+        spine_par_min, spine_bound);
   }
 };
 
